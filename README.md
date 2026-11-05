@@ -19,6 +19,9 @@ standard library only, which is also why the Docker image is small and boring.
 > board, schedule, or token economy is part of a child's program, the people
 > running that program decide how it is set up.
 
+**Why this is free, how it is funded, and what we will not do with your
+child's data: [VALUES.md](VALUES.md).**
+
 ## The two surfaces
 
 | Surface | Who uses it | What it does |

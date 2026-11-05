@@ -1,0 +1,20 @@
+# Runtime state — not committed.
+active/
+done/
+failed/
+blocked/
+runs/
+heartbeat
+tripped
+.run.lock
+watch.log
+inference.log
+STATUS.md
+
+# Research task outputs — machine-local until the operator commits the
+# accepted ones to docs/research/ (see docs/PLAN.md handoff table).
+research/
+
+# Keep queue/ tracked.
+!queue/
+!queue/**
