@@ -3,6 +3,8 @@
 process.env.DB_PATH = ':memory:';
 // A fresh board owes a bootstrap token; this suite supplies it non-interactively.
 process.env.SETUP_TOKEN = 'main-suite-setup-token-9f8e7d6c';
+// the suite performs more logins than a minute allows a stranger; tests are not strangers
+process.env.LOGIN_RATE_LIMIT = '1000';
 const test = require('node:test');
 const assert = require('node:assert');
 const { server } = require('./server.js');
@@ -99,6 +101,45 @@ test('password change requires the current one, rejects weak ones, and kills eve
   cookie = login.headers.get('set-cookie').split(';')[0];
   assert.equal((await call('GET', '/api/admin/config')).status, 200);
 });
+// ---- 0008: session visibility and revocation ----
+test('signed-in devices: list, revoke one, revoke all-but-me', async () => {
+  const cookieOf = r => (r.headers.get('set-cookie') || '').split(';')[0];
+  const second = await fetch(base + '/api/admin/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: PW }) });
+  assert.equal(second.status, 200);
+  const cookie2 = cookieOf(second);
+  assert.ok(cookie2, 'second session exists');
+  const list = await call('GET', '/api/admin/sessions');
+  assert.equal(list.status, 200);
+  assert.ok(list.body.sessions.length >= 2, 'both sessions listed');
+  assert.ok(list.body.sessions.every(s => s.sid && s.sid.length === 12), 'sids are 12-char prefixes');
+  assert.equal(list.body.sessions.filter(s => s.current).length, 1, 'exactly one current session');
+  const mine = list.body.sessions.find(s => s.current);
+  const other = list.body.sessions.find(s => !s.current);
+  // revoke the OTHER session by sid
+  const del = await call('DELETE', `/api/admin/sessions/${other.sid}`);
+  assert.equal(del.status, 200);
+  const dead = await fetch(base + '/api/admin/config', { headers: { cookie: cookie2 } });
+  assert.equal(dead.status, 401, 'revoked session is dead');
+  const alive = await call('GET', '/api/admin/config');
+  assert.equal(alive.status, 200, 'caller session survives');
+  // unknown sid → 404
+  assert.equal((await call('DELETE', '/api/admin/sessions/deadbeef0001')).status, 404);
+  // revoke-all-but-me
+  const third = cookieOf(await fetch(base + '/api/admin/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: PW }) }));
+  assert.ok(third);
+  const all = await call('DELETE', '/api/admin/sessions');
+  assert.equal(all.status, 200);
+  assert.equal(all.body.revoked, 1, 'the one remaining other session was revoked');
+  assert.equal((await call('GET', '/api/admin/config')).status, 200, 'caller survives revoke-all');
+  const gone = await fetch(base + '/api/admin/config', { headers: { cookie: third } });
+  assert.equal(gone.status, 401);
+  // the audit shows it
+  const sec = (await call('GET', '/api/admin/security')).body;
+  assert.ok(sec.events.some(e => e.kind === 'session_revoke'));
+  assert.ok(sec.events.some(e => e.kind === 'session_revoke_all'));
+  void mine;
+});
+
 // last among the auth tests: it locks this IP out for 15 minutes, and the
 // board-behaviour tests below ride the live session, not a login.
 test('login rejects a wrong password and lockout kicks in after five', async () => {
@@ -254,7 +295,9 @@ test('day plans carry their name to the kiosk without clobbering marks', async (
 test('the security log records auth outcomes, admin writes, and kiosk use', async () => {
   const { body } = await call('GET', '/api/admin/security');
   const kinds = new Set(body.events.map(e => e.kind));
-  assert.ok(kinds.has('setup'), 'setup is on the record');
+  // setup scrolled past the 50-row window long ago in this suite; the table itself is the record
+  const { db } = require('./server.js');
+  assert.ok(db.prepare("SELECT 1 FROM security_events WHERE kind='setup'").get(), 'setup is on the record');
   assert.ok(kinds.has('login_ok'), 'successful logins are on the record');
   assert.ok(kinds.has('login_fail'), 'failed logins are on the record (with detail)');
   assert.ok(kinds.has('admin_write'), 'admin mutations are on the record');

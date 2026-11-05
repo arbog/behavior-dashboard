@@ -356,7 +356,7 @@ function vWeek() {
 
 // ---------- Settings: identity, security, battery copy, rewards, protocol ----------
 async function vSettings() {
-  const [tok, sec] = await Promise.all([api('GET', '/token'), api('GET', '/security')]);
+  const [tok, sec, sess] = await Promise.all([api('GET', '/token'), api('GET', '/security'), api('GET', '/sessions')]);
   const secRow = e => `<div class="row" style="padding:6px 0;border-bottom:1px solid var(--line);gap:10px">
       <span class="dim" style="width:52px">${esc(String(e.ts).slice(5, 16))}</span>
       <span style="width:140px;font-weight:600;${e.ok ? '' : 'color:var(--bad)'}">${esc(e.kind)}${e.ok ? '' : ' ✗'}</span>
@@ -402,10 +402,23 @@ async function vSettings() {
     <div class="mt"><small class="dim">Script without one (<code>{name}</code>)</small><textarea id="pS" rows="2">${esc(cfg.regulation.protocol.script)}</textarea></div>
     <div class="mt"><button class="b" id="pBtn2">Save protocol</button></div></div>
 
+  <div class="card"><h2>Signed-in devices</h2>
+    <div class="dim">Every console session that is still alive. Signed-out devices must sign in again.</div>
+    ${sess.sessions.map(s => `<div class="row" style="padding:6px 0;border-bottom:1px solid var(--line);gap:10px">
+      <span style="width:150px;font-weight:600">${s.current ? '<span class="tag" style="background:var(--ok);color:#06281b">this device</span>' : esc(s.sid)}</span>
+      <span class="dim grow">created ${esc(String(s.created_at).slice(0, 16))} · last seen ${esc(String(s.last_seen || s.created_at).slice(5, 16))}</span>
+      ${s.current ? '' : `<button class="b sec" data-kill="${esc(s.sid)}">Sign out</button>`}</div>`).join('') || '<div class="dim">No sessions.</div>'}
+    <div class="mt"><button class="b del" id="killAll">Sign out everything else</button></div></div>
+
   <div class="card"><h2>Security log</h2>
     <div class="dim">The last 50 security events: logins (good and bad), the setup, password changes, kiosk-code rotations, and every console write with its source IP. The log keeps its most recent 500 entries on the server.</div>
     <div class="mt">${sec.events.length ? sec.events.slice(0, 20).map(secRow).join('') : '<div class="dim">Nothing yet.</div>'}</div></div>`;
   $('#setNameBtn').onclick = async () => { await api('PUT', '/identity', { child_name: $('#setName').value }); toast(); };
+  $('#view').querySelectorAll('[data-kill]').forEach(b => b.onclick = async () => { await api('DELETE', '/sessions/' + b.dataset.kill); toast('Signed out'); show(); });
+  $('#killAll').onclick = async () => {
+    if (!confirm('Sign out every other device? They must sign in again.')) return;
+    const out = await api('DELETE', '/sessions', {}); toast(`Signed out ${out.revoked}`); show();
+  };
   $('#tokCopy').onclick = async () => { await navigator.clipboard.writeText(tok.token); toast('Copied'); };
   $('#tokRotate').onclick = async () => {
     if (!confirm('Rotate the kiosk code? Every kiosk must be given the new code.')) return;

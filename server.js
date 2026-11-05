@@ -87,7 +87,8 @@ CREATE TABLE IF NOT EXISTS day_plans (
   date TEXT PRIMARY KEY, mode_id INTEGER REFERENCES modes(id) ON DELETE SET NULL,
   kind TEXT DEFAULT 'plan', label TEXT DEFAULT '', note TEXT DEFAULT '', by TEXT DEFAULT '');
 CREATE TABLE IF NOT EXISTS sessions (
-  token_hash TEXT PRIMARY KEY, expires_at TEXT NOT NULL, created_at TEXT NOT NULL);
+  token_hash TEXT PRIMARY KEY, expires_at TEXT NOT NULL, created_at TEXT NOT NULL,
+  last_seen TEXT DEFAULT '');
 CREATE TABLE IF NOT EXISTS security_events (
   id INTEGER PRIMARY KEY, ts TEXT NOT NULL, kind TEXT NOT NULL,
   ip TEXT DEFAULT '', detail TEXT DEFAULT '', ok INTEGER NOT NULL DEFAULT 1);
@@ -113,6 +114,7 @@ addColumn('day_items', 'rule_id INTEGER');
 addColumn('days', "plan_label TEXT DEFAULT ''");
 addColumn('days', "plan_note TEXT DEFAULT ''");
 addColumn('days', "plan_kind TEXT DEFAULT ''");
+addColumn('sessions', "last_seen TEXT DEFAULT ''");
 
 // ---------- defaults (neutral starting points; all editable in /admin) ----------
 const BATTERY_LINES = 5;
@@ -515,12 +517,21 @@ const WEAK_PASSWORDS = new Set([
   'hello', 'hello123', 'charlie', 'maggie', 'ginger', 'summer', 'winter', 'spring', 'autumn',
 ]);
 const weakPassword = pw => { const p = String(pw || '').trim().toLowerCase(); return p.length < 8 || WEAK_PASSWORDS.has(p); };
+const SESSION_SEEN = new Map();   // token_hash -> ts of last throttled last_seen write
 function sessionUser(req) {
   const t = parseCookies(req).bd_session;
   if (!t) return null;
-  const row = db.prepare('SELECT * FROM sessions WHERE token_hash=?').get(sha256(t));
+  const hash = sha256(t);
+  const row = db.prepare('SELECT * FROM sessions WHERE token_hash=?').get(hash);
   if (!row) return null;
   if (parseTs(row.expires_at) <= new Date()) { db.prepare('DELETE FROM sessions WHERE token_hash=?').run(row.token_hash); return null; }
+  // Throttled liveness: "signed-in devices" is only useful if last_seen is
+  // fresh, but a write per request would churn the WAL for every poll.
+  const now = Date.now();
+  if (now - (SESSION_SEEN.get(hash) || 0) > 60000) {
+    SESSION_SEEN.set(hash, now);
+    try { db.prepare('UPDATE sessions SET last_seen=? WHERE token_hash=?').run(tsNow(), hash); } catch {}
+  }
   return 'admin';
 }
 function adminAuthed(req) { return !!sessionUser(req); }
@@ -569,6 +580,7 @@ function sweepLimits(now = Date.now()) {
   for (const [k, arr] of limits) if (!arr.length || now - arr[arr.length - 1] > 60000) limits.delete(k);
   for (const [k, l] of lockouts) if (l.until > 0 && l.until <= now) lockouts.delete(k);
 }
+const LOGIN_RATE_LIMIT = Math.max(1, Number(process.env.LOGIN_RATE_LIMIT) || 10);
 const lockouts = new Map();   // key -> { n, until }
 function loginAllowed(ip) {
   const l = lockouts.get(ip);
@@ -808,7 +820,7 @@ function admin(req, res, url, body, user) {
     });
   }
   if (M === 'POST' && p === '/api/admin/login') {
-    if (!rateLimit('login:' + ip, 10, 60000)) { logEvent('login_fail', ip, 'rate limited'); return json(res, 429, { error: 'too many attempts' }); }
+    if (!rateLimit('login:' + ip, LOGIN_RATE_LIMIT, 60000)) { logEvent('login_fail', ip, 'rate limited'); return json(res, 429, { error: 'too many attempts' }); }
     const lo = loginAllowed(ip);
     if (!lo.ok) { logEvent('login_fail', ip, 'locked'); return json(res, 423, { error: `locked; try again in ${Math.ceil((lo.until - Date.now()) / 60000)} min` }); }
     if (!getSetting('admin_hash')) {
@@ -886,6 +898,27 @@ function admin(req, res, url, body, user) {
   if (M === 'GET' && p === '/api/admin/security') {
     const events = db.prepare('SELECT ts,kind,ip,detail,ok FROM security_events ORDER BY id DESC LIMIT 50').all();
     return json(res, 200, { kiosk_last_used: getSetting('kiosk_last_used') || null, events });
+  }
+  // Signed-in devices: visible, and killable individually. The sid is the
+  // 12-char prefix of the stored hash — enough to match a row, never enough
+  // to use one.
+  const mySessionHash = sha256(parseCookies(req).bd_session || '');
+  if (M === 'GET' && p === '/api/admin/sessions') {
+    const sessions = db.prepare('SELECT token_hash, created_at, expires_at, last_seen FROM sessions ORDER BY created_at').all()
+      .map(s => ({ sid: s.token_hash.slice(0, 12), created_at: s.created_at, expires_at: s.expires_at, last_seen: s.last_seen || null, current: s.token_hash === mySessionHash }));
+    return json(res, 200, { sessions });
+  }
+  if (M === 'DELETE' && p === '/api/admin/sessions') {
+    const gone = db.prepare('DELETE FROM sessions WHERE token_hash <> ?').run(mySessionHash);
+    logEvent('session_revoke_all', ip, `revoked ${gone.changes}`);
+    return json(res, 200, { ok: true, revoked: gone.changes });
+  }
+  if (M === 'DELETE' && (m = p.match(/^\/api\/admin\/sessions\/([0-9a-f]{12})$/))) {
+    const row = db.prepare("SELECT token_hash FROM sessions WHERE substr(token_hash,1,12)=?").get(m[1]);
+    if (!row) return json(res, 404, { error: 'no such session' });
+    db.prepare('DELETE FROM sessions WHERE token_hash=?').run(row.token_hash);
+    logEvent('session_revoke', ip, 'sid ' + m[1]);
+    return json(res, 200, { ok: true, current: row.token_hash === mySessionHash });
   }
   if (M === 'PUT' && p === '/api/admin/identity') {
     setSetting('child_name', clampStr(body.child_name, 40));
