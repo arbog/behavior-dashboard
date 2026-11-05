@@ -44,7 +44,7 @@ code task runs. Dependent tasks carry a Stop-and-ask for the missing doc.
 ## C — Compliance & privacy
 - [x] `0001` research: child-data law matrix (COPPA + states) →
   `docs/research/laws.md` (landed 2026-11-05, in-session)
-- [ ] `0017` compliance controls (consent gate, retention, delete-everything)
+- [x] `0017` compliance controls (consent gate, retention, delete-everything) (landed 2026-11-05)
 - [x] `0003` research: SQLite encryption-at-rest design →
   `docs/research/encryption.md` (landed 2026-11-05, in-session)
 - [ ] `0018` encryption at rest (whole-DB blob; the blob is the backup)

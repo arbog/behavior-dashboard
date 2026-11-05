@@ -111,6 +111,11 @@ CREATE TABLE IF NOT EXISTS passkeys (
   public_key TEXT NOT NULL, sign_count INTEGER NOT NULL DEFAULT 0, aaid TEXT DEFAULT '',
   user_handle TEXT NOT NULL DEFAULT 'admin', created_at TEXT NOT NULL, last_used_at TEXT DEFAULT '',
   revoked_at TEXT);
+-- Consent artifacts (0017): the operator's acknowledgment that this machine
+-- stores the child's behavioral data. Deliberately NOT deleted by the wipe —
+-- a deletion record is the one thing a deletion request must leave behind.
+CREATE TABLE IF NOT EXISTS consents (
+  id INTEGER PRIMARY KEY, who TEXT NOT NULL, what TEXT NOT NULL, ip TEXT DEFAULT '', ts TEXT NOT NULL);
 `);
 
 // Bounded audit trail: what happened to the board's keys and who touched it.
@@ -956,6 +961,10 @@ function admin(req, res, url, body, user) {
     setSetting('admin_hash', hashPassword(pw));
     setSetting('setup_token_hash', null);   // single use
     if (body.child_name != null) setSetting('child_name', clampStr(body.child_name, 40));
+    // Consent artifact (0017): the operator's own acknowledgment, recorded —
+    // self-hosted, the family IS the operator; this is the record they kept.
+    db.prepare('INSERT INTO consents(who,what,ip,ts) VALUES(?,?,?,?)').run(
+      'guardian', 'I run this board for my family on my own machine. I choose to store my child\'s behavioral data here. I can export it or delete everything at any time.', ip, tsNow());
     logEvent('setup', ip);
     return json(res, 200, { ok: true }, { 'set-cookie': newSession() });
   }
@@ -1144,7 +1153,42 @@ function admin(req, res, url, body, user) {
     const events = db.prepare('SELECT ts,kind,ip,detail,ok FROM security_events ORDER BY id DESC LIMIT 50').all();
     const kiosk_devices = db.prepare('SELECT label,last_used_at FROM kiosk_devices WHERE revoked_at IS NULL ORDER BY id').all();
     const api_keys = db.prepare('SELECT name,last_used_at FROM api_keys WHERE revoked_at IS NULL ORDER BY id').all();
-    return json(res, 200, { kiosk_devices, api_keys, events });
+    return json(res, 200, { kiosk_devices, api_keys, events, retention_months: getSetting('retention_months') == null ? 12 : Number(getSetting('retention_months')) });
+  }
+  // ---- 0017: the compliance controls ----
+  // The consent artifact: who acknowledged what, when, from where.
+  if (M === 'GET' && p === '/api/admin/consent') {
+    return json(res, 200, { consents: db.prepare('SELECT who,what,ip,ts FROM consents ORDER BY id').all() });
+  }
+  // Retention: how many months of raw events the board keeps. 0 = keep
+  // everything (the family's own machine, their own call). Changing it prunes
+  // immediately — a policy that only applies tomorrow is not a policy.
+  if (M === 'PUT' && p === '/api/admin/retention') {
+    const months = toInt(body.months);
+    if (months == null || months < 0 || months > 60) return json(res, 400, { error: 'months must be 0 (keep everything) through 60' });
+    setSetting('retention_months', months);
+    const pruned = pruneRetention();
+    logEvent('retention_change', ip, months ? `${months} months (${pruned} rows pruned)` : 'keep everything');
+    return json(res, 200, { ok: true, months, pruned });
+  }
+  // Delete-everything: the deletion request the family makes to themselves —
+  // and the control that makes self-hosting a complete story. Wipes every
+  // data table, reseeds the neutral copy, signs out every device but this
+  // one, and keeps exactly two things: the login and the consent record.
+  if (M === 'POST' && p === '/api/admin/wipe') {
+    if (String(body.confirm || '') !== 'DELETE EVERYTHING') return json(res, 400, { error: 'type DELETE EVERYTHING to confirm — this cannot be undone' });
+    const myHash = sha256(parseCookies(req).bd_session || '');
+    tx(() => {
+      for (const t of ['modes', 'mode_items', 'weekday_modes', 'day_plans', 'days', 'day_items', 'abc_events', 'battery_events', 'check_ins', 'tool_uses', 'rules', 'tools', 'battery_state', 'choices', 'abc_options', 'kiosk_devices', 'api_keys', 'passkeys']) {
+        db.prepare(`DELETE FROM ${t}`).run();
+      }
+      db.prepare("DELETE FROM settings WHERE key != 'admin_hash'").run();
+      db.prepare('DELETE FROM sessions WHERE token_hash != ?').run(myHash);
+      db.prepare('DELETE FROM security_events').run();
+      seed();
+    });
+    logEvent('wipe', ip, 'everything but this session and the consent record');
+    return json(res, 200, { ok: true });
   }
   // The family's data, in one document they own. No redaction: it requires a
   // full admin session, and it is the human-readable half of the backup story
@@ -1509,6 +1553,21 @@ if (process.env.KIOSK_TOKEN && !getSetting('kiosk_token')) {
   setSetting('kiosk_token', String(process.env.KIOSK_TOKEN).slice(0, 64));
 }
 seed();
+// ---- 0017: retention. Written policy: raw events (ABC, battery, tool use,
+// check-ins) are kept a rolling 12 months by default — old enough to see the
+// patterns the risk view needs, young enough that "last year's blows" do not
+// quietly become forever. The family can widen (up to 60) or zero it out.
+function pruneRetention() {
+  const months = getSetting('retention_months') == null ? 12 : Number(getSetting('retention_months'));
+  if (!months || !Number.isFinite(months)) return 0;
+  const cutoff = fmtTs(new Date(Date.now() - Math.min(months, 120) * 30 * 864e5));
+  let n = 0;
+  for (const t of ['abc_events', 'battery_events', 'tool_uses', 'check_ins']) {
+    n += Number(db.prepare(`DELETE FROM ${t} WHERE ts < ?`).run(cutoff).changes);
+  }
+  return n;
+}
+setInterval(() => { try { pruneRetention(); } catch {} }, 3600e3).unref();
 if (process.env.ADMIN_PASSWORD && !getSetting('admin_hash')) {
   setSetting('admin_hash', hashPassword(String(process.env.ADMIN_PASSWORD)));
   console.log('admin password set from ADMIN_PASSWORD env (first run only)');

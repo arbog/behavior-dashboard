@@ -121,7 +121,10 @@ Security & data:
 | `GET /api/admin/api-keys` | keys (prefix only) |
 | `DELETE /api/admin/api-keys/:id` | revoke a key |
 | `GET /api/admin/export` | every table as one dated JSON attachment |
-| `GET /api/admin/security` | audit trail (last 50) + live kiosk devices + api keys |
+| `GET /api/admin/consent` | the consent artifact(s) — who acknowledged what, when |
+| `PUT /api/admin/retention` | `{months}` 0–60 — how many months of raw events (ABC, battery, tools, check-ins) to keep; 0 keeps everything; prunes on save, hourly after |
+| `POST /api/admin/wipe` | `{confirm: "DELETE EVERYTHING"}` — deletes every board data row, reseeds the neutral copy, signs out all other devices; keeps the login and the consent record |
+| `GET /api/admin/security` | audit trail (last 50) + live kiosk devices + api keys + the retention setting |
 
 Errors: `400` bad input, `401` no/wrong credential, `403` wrong token/password,
 `404` unknown id or disabled capability, `423` login lockout, `429` rate

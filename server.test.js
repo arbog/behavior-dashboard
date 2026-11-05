@@ -7,7 +7,7 @@ process.env.SETUP_TOKEN = 'main-suite-setup-token-9f8e7d6c';
 process.env.LOGIN_RATE_LIMIT = '1000';
 const test = require('node:test');
 const assert = require('node:assert');
-const { server } = require('./server.js');
+const { server, db } = require('./server.js');
 
 let PW = 'correct-horse-battery';
 
@@ -520,4 +520,60 @@ test('profiles gate the kiosk: payload omits, endpoints close', async () => {
   const t2 = await kioskRaw('GET', '/api/today', undefined, kiosk);
   assert.ok(t2.body.caps.tools, 'anxiety keeps the calm-down menu');
   await call('PUT', '/api/admin/profile', { id: 'standard' });
+});
+
+// ---- 0017: compliance controls — consent, retention, delete-everything ----
+test('the consent artifact is recorded at setup, readable, and exported', async () => {
+  const c = await call('GET', '/api/admin/consent');
+  assert.equal(c.status, 200);
+  assert.ok(c.body.consents.length >= 1, 'setup left an acknowledgment');
+  assert.match(c.body.consents[0].what, /my child/i);
+  assert.ok(c.body.consents[0].ts && c.body.consents[0].ip !== undefined);
+  const x = await fetch(base + '/api/admin/export', { headers: { cookie } });
+  const body = await x.json();
+  assert.ok(Array.isArray(body.tables.consents) && body.tables.consents.length, 'the export carries the consent record');
+});
+test('retention: the policy is written and pruning is real', async () => {
+  // a row from two years ago directly in the DB
+  db.prepare("INSERT INTO abc_events(ts,antecedents,behaviors,consequences,note,by,severity) VALUES(?, '[]','[]','[]','ancient','test',1)")
+    .run(new Date(Date.now() - 730 * 864e5).toISOString().slice(0, 19).replace('T', ' '));
+  const fresh = await call('POST', '/api/admin/abc', { behaviors: ['recent'], note: 'keep me' });
+  assert.equal(fresh.status, 200);
+  const bad = await call('PUT', '/api/admin/retention', { months: 999 });
+  assert.equal(bad.status, 400);
+  const r = await call('PUT', '/api/admin/retention', { months: 12 });
+  assert.equal(r.status, 200);
+  assert.ok(r.body.pruned >= 1, 'the ancient row is gone');
+  const abc = await call('GET', '/api/admin/abc?days=365');
+  assert.ok(!abc.body.events.some(e => e.note === 'ancient'), 'the old row is not served either');
+  assert.ok(abc.body.events.some(e => e.note === 'keep me'), 'the fresh row stays');
+  // 0 = keep everything, and the audit says so
+  const zero = await call('PUT', '/api/admin/retention', { months: 0 });
+  assert.equal(zero.body.months, 0);
+  const sec = await call('GET', '/api/admin/security');
+  assert.ok(sec.body.events.some(e => e.kind === 'retention_change'), 'retention changes are on the record');
+  await call('PUT', '/api/admin/retention', { months: 12 });
+});
+test('delete-everything: typed confirmation, real deletion, fresh board', async () => {
+  assert.equal((await call('POST', '/api/admin/wipe', { confirm: 'delete everything' })).status, 400, 'sloppy confirm refused');
+  assert.equal((await call('POST', '/api/admin/wipe', {})).status, 400);
+  // leave traces in several tables first
+  await call('POST', '/api/admin/abc', { behaviors: ['x'], note: 'to be wiped' });
+  await call('POST', '/api/admin/battery', { delta: -1 });
+  await call('POST', '/api/admin/kiosk-devices', { label: 'Doomed TV' });
+  await call('PUT', '/api/admin/identity', { child_name: 'Sam' });
+  const w = await call('POST', '/api/admin/wipe', { confirm: 'DELETE EVERYTHING' });
+  assert.equal(w.status, 200);
+  const cfg = await call('GET', '/api/admin/config');
+  assert.ok(cfg.body.modes.length >= 4, 'the neutral seeds are back');
+  assert.equal(cfg.body.identity.child_name, '', 'the child name is gone');
+  assert.equal((await call('GET', '/api/admin/abc')).body.events.length, 0, 'no ABC rows survive');
+  assert.equal((await call('GET', '/api/admin/kiosk-devices')).body.devices.length, 0, 'no kiosk devices survive');
+  const consent = await call('GET', '/api/admin/consent');
+  assert.ok(consent.body.consents.length >= 1, 'the consent record survives the wipe');
+  const sec = await call('GET', '/api/admin/security');
+  assert.ok(sec.body.events.some(e => e.kind === 'wipe'), 'the wipe itself is on the record');
+  assert.equal(sec.status, 200, 'this session still works');
+  const other = await fetch(base + '/api/admin/config', { headers: { cookie: 'bd_session=deadbeefdeadbeef' } });
+  assert.equal(other.status, 401, 'every other session is signed out');
 });
