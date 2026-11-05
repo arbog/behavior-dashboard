@@ -117,3 +117,27 @@ what you run.
 The board keeps a consent record — your acknowledgment, with a timestamp —
 which survives even a full wipe, because a deletion record is the one thing a
 deletion request must leave behind.
+
+## Encryption at rest
+
+Set `BD_PASSPHRASE` (8+ characters) and the board encrypts everything at
+rest: the data directory holds one encrypted blob (`board.enc`), the working
+copy lives on tmpfs when the host offers it, and the blob re-encrypts every
+30 seconds and at clean shutdown. A stolen disk yields a useless file.
+
+- **The passphrase is the only key.** There is no recovery code and no
+  backdoor — a lost passphrase means lost data, on purpose. Both parents
+  should know it.
+- **Backup = copy `board.enc`.** It is encrypted and self-contained; restore
+  = put it back and supply the passphrase. The JSON export remains the
+  human-readable escape hatch.
+- **Crash honesty:** a hard crash loses at most the re-encrypt cadence of
+  writes — unless the working copy survived, in which case the next boot
+  recovers it (the boot says "recovered unflushed state" when it does).
+- **Migrating an older install:** boot with `BD_PASSPHRASE` set next to an
+  existing plaintext `board.db` and it is encrypted, verified, and the
+  plaintext removed — once, at first boot.
+- If you can, run the data directory on an encrypted filesystem too — that
+  protects the working copy and the tmpfs file as well. Encryption here
+  covers at-rest only; a live process (and a compromised host) can read data,
+  as with any database.

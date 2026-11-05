@@ -31,7 +31,7 @@ whole flag set as `caps`; the console config carries `profile`).
 
 | Method & path | Purpose | Response |
 |---|---|---|
-| `GET /healthz` | liveness + SQLite probe | `{ ok, db, version }` |
+| `GET /healthz` | liveness + SQLite probe | `{ ok, db, version, encrypted }` — `encrypted` says whether the store is the encrypted blob (BD_PASSPHRASE) or the plaintext file |
 | `GET /` , `GET /admin` | page shells (no data) | HTML |
 | `GET /api/admin/me` | state probe for the console UI | `200 {setup, setup_token, child_name}` (configured+authed) or `401 {setup}` |
 

@@ -47,7 +47,7 @@ code task runs. Dependent tasks carry a Stop-and-ask for the missing doc.
 - [x] `0017` compliance controls (consent gate, retention, delete-everything) (landed 2026-11-05)
 - [x] `0003` research: SQLite encryption-at-rest design →
   `docs/research/encryption.md` (landed 2026-11-05, in-session)
-- [ ] `0018` encryption at rest (whole-DB blob; the blob is the backup)
+- [x] `0018` encryption at rest (whole-DB blob; the blob is the backup) (landed 2026-11-05)
 
 ## M — Managed tier & deploy (ATTENDED ONLY — secrets/infra, never queued)
 - [ ] PaaS one-click deploy satisfying the `docs/self-service.md` contract
