@@ -80,11 +80,24 @@
   #auth[hidden] { display:none; }
   #auth .card { width:100%; max-width:420px; }
   #auth h1 { font-size:20px; margin:0 0 4px; }
+  /* family walkthrough (0014) — same shell as the auth overlay */
+  #wizard { position:fixed; inset:0; z-index:4; overflow:auto; display:flex; align-items:flex-start; justify-content:center; padding:10vh 16px;
+    background:radial-gradient(900px 420px at 50% -80px, #1f2554 0%, rgba(31,37,84,0) 70%), var(--bg); }
+  #wizard[hidden] { display:none; }
+  #wizard .card { width:100%; max-width:520px; }
+  #wizard h1 { font-size:20px; margin:0 0 4px; }
+  #wizard .opt { display:block; width:100%; text-align:left; border:1px solid var(--line); border-radius:10px; background:transparent; color:var(--text);
+    padding:12px 14px; margin-top:8px; cursor:pointer; }
+  #wizard .opt b { display:block; }
+  #wizard .opt:active, #wizard .opt:hover { border-color:var(--accent); }
 </style>
 </head>
 <body>
 <div id="auth" hidden>
   <div class="card" id="authCard"></div>
+</div>
+<div id="wizard" hidden>
+  <div class="card" id="wizCard"></div>
 </div>
 <header><h1>Behavior Board — Admin</h1><span id="stat" class="dim" style="font-size:14px"></span><span id="ver" class="dim" style="font-size:13px"></span><a href="/" target="_blank">Open kiosk ↗</a></header>
 <nav id="nav"></nav>
@@ -134,10 +147,75 @@ async function showAuth() {
       });
       if (!r.ok) { const e = await r.json().catch(() => ({})); alert(e.error || 'Error'); return; }
       $('#auth').hidden = true;
+      if (me.setup) { localStorage.removeItem('bd_wizard_done'); showWizard.ans = null; show(); showWizard(); return; }
       show();
     } catch (e) { /* network */ }
   };
   setTimeout(() => $('#auPw')?.focus(), 50);
+}
+
+// ---- 0014: the family walkthrough ----
+// One question per screen; every question skippable; “I'm not sure” picks the
+// standard profile and says so kindly. Client-only: everything it applies is
+// an existing endpoint (identity, profile). The clinical profile names from
+// the research live in the server, not here — these screens ask about the
+// child's day, never about the diagnosis.
+const CAPS_LABEL = [
+  { key: 'tools', label: 'calm-down tools' }, { key: 'rewards', label: 'reward minutes' },
+  { key: 'battery', label: 'the battery' }, { key: 'rules', label: 'the rules & X marks' },
+  { key: 'abc', label: 'the ABC log' }, { key: 'checkins', label: 'check-ins' }, { key: 'pause', label: 'rewards pause' },
+];
+function showWizard(step = 0) {
+  showWizard.ans = showWizard.ans || { name: '', profile: null };
+  const a = showWizard.ans;
+  const back = s => { $('#wizCard').innerHTML = s; $('#wizard').hidden = false; };
+  const blurb = async () => {
+    try { await api('GET', '/config'); return (cfg.profile || {}).presets || []; } catch { return []; }
+  };
+  if (step === 0) {
+    back(`<h1>Welcome to the board</h1>
+      <div class="dim">Four short screens, none of them tests, all of them optional — you can change any of this later, today or any day.</div>
+      <div class="mt"><small class="dim">What should the board call your child? (Optional — the board works name-free.)</small>
+      <input id="wzName" maxlength="40" value="${esc(a.name)}" placeholder="e.g. Sam"></div>
+      <div class="mt"><button class="b" id="wzNext" style="width:100%">Next</button>
+      <button class="b sec" id="wzSkip" style="width:100%;margin-top:6px">Skip the walkthrough</button></div>`);
+    $('#wzNext').onclick = () => { a.name = $('#wzName').value.trim().slice(0, 40); showWizard(1); };
+    $('#wzSkip').onclick = () => closeWizard();
+  } else if (step === 1) {
+    back(`<h1>How does your child tell you what they want?</h1>
+      <button class="opt" id="wzWords"><b>With words</b><span class="dim">Sentences, requests — they can usually say what they want</span></button>
+      <button class="opt" id="wzPics"><b>Mostly pictures, gestures, or a few words</b><span class="dim">The board becomes big taps that say yes, no, break, and more — no scoring anywhere</span></button>
+      <div class="mt"><button class="b sec" id="wzBack">← Back</button></div>`);
+    $('#wzWords').onclick = () => { if (a.profile === 'communication') a.profile = null; showWizard(2); };
+    $('#wzPics').onclick = () => { a.profile = 'communication'; showWizard(2); };
+    $('#wzBack').onclick = () => showWizard(0);
+  } else if (step === 2) {
+    back(`<h1>What does the board need to help with most?</h1>
+      <div class="dim">Pick the closest — a starting point, not a contract.</div>
+      <div id="wzOpts" style="margin-top:6px"></div>
+      <div class="mt"><button class="b sec" id="wzBack">← Back</button></div>`);
+    blurb().then(presets => {
+      $('#wzOpts').innerHTML = presets.filter(p => p.id !== 'communication' || a.profile === 'communication').map(p =>
+        `<button class="opt" data-p="${p.id}"><b>${esc(p.name)}</b><span class="dim">${esc(p.blurb)}</span></button>`).join('')
+        + `<button class="opt" data-p="standard"><b>I'm not sure</b><span class="dim">Start with the standard board — you can turn any part on or off later</span></button>`;
+      $('#wzOpts').querySelectorAll('.opt').forEach(o => o.onclick = () => { a.profile = o.dataset.p; showWizard(3); });
+    });
+    $('#wzBack').onclick = () => showWizard(1);
+  } else {
+    const name = a.name ? ' for ' + esc(a.name) : '';
+    back(`<h1>You're ready${name}</h1>
+      <div class="dim mt">The board will start with <b>${esc(cfg.profile.presets.find(p => p.id === (a.profile || 'standard')).name)}</b>.
+      You can turn any part of this on or off, today or any day — the board is yours.</div>
+      <div class="mt"><button class="b" id="wzGo" style="width:100%">Set up my board</button>
+      <button class="b sec" id="wzBack" style="width:100%;margin-top:6px">← Back</button></div>`);
+    $('#wzGo').onclick = async () => {
+      if (a.name) await api('PUT', '/identity', { child_name: a.name }).catch(() => {});
+      await api('PUT', '/profile', { id: a.profile || 'standard' }).catch(() => {});
+      closeWizard(); show();
+    };
+    $('#wzBack').onclick = () => showWizard(2);
+  }
+  function closeWizard() { localStorage.setItem('bd_wizard_done', '1'); showWizard.ans = null; $('#wizard').hidden = true; }
 }
 
 const TABS = { today: 'Today', battery: 'Battery & check-in', behavior: 'Log behavior', calendar: 'Calendar', risk: 'Patterns', modes: 'Modes', week: 'Week & lists', settings: 'Settings', history: 'History' };
@@ -148,6 +226,7 @@ function nav() {
 // The protocol's live states, always in reach: the battery, paused fun, and whether a check-in is overdue.
 function stat() {
   const r = cfg.regulation;
+  if (!r) { $('#stat').innerHTML = '<span class="dim">the battery, pause and check-ins are off in this profile</span>'; return; }
   $('#stat').innerHTML = `<span style="color:${r.battery.band.color}">▮ ${esc(r.battery.band.name)} ${r.battery.lines}/${r.battery.max}</span>`
     + (r.pause.active ? ' · <span style="color:var(--bad)">rewards paused</span>' : '')
     + (r.check_in.due ? ` · <span style="color:var(--bad)">${ciDue(r.check_in)}</span>` : '');
@@ -419,6 +498,19 @@ async function vSettings() {
       ${s.current ? '' : `<button class="b sec" data-kill="${esc(s.sid)}">Sign out</button>`}</div>`).join('') || '<div class="dim">No sessions.</div>'}
     <div class="mt"><button class="b del" id="killAll">Sign out everything else</button></div></div>
 
+  <div class="card"><h2>Board profile</h2>
+    <div class="dim">Every family gets the least board that serves their child — and the most only if they ask for it. A picture of the day (schedule, plans, choices) is always here; these are the parts you can turn off, today or any day. ${esc(cfg.identity.child_name || 'This child')}'s board currently has: <b>${CAPS_LABEL.filter(c => cfg.profile[c]).map(c => c.label).join(', ') || 'just the day'}</b>.</div>
+    <div class="mt" style="display:flex;flex-wrap:wrap;gap:6px">
+      ${CAPS_LABEL.map(c => `<label style="border:1px solid var(--line);border-radius:8px;padding:4px 10px;display:flex;gap:6px;align-items:center;font-weight:${cfg.profile[c.key] ? '700' : '400'};${cfg.profile[c.key] ? '' : 'color:var(--dim)'}"><input type="checkbox" class="capT" data-c="${c.key}" ${cfg.profile[c.key] ? 'checked' : ''}> ${esc(c.label)}</label>`).join('')}
+    </div>
+    <div class="mt dim">Or start from one of these — switching resets the toggles above:</div>
+    <div class="mt" style="display:grid;gap:6px">
+      ${cfg.profile.presets.map(p => `<div style="border:1px solid ${p.id === cfg.profile.id ? 'var(--ok, #4f8cff)' : 'var(--line)'};border-radius:10px;padding:8px 12px;display:flex;gap:10px;align-items:center">
+        <div class="grow"><b>${esc(p.name)}</b>${p.id === cfg.profile.id ? ' <span class="tag">current</span>' : ''}<div class="dim" style="font-size:13px">${esc(p.blurb)}</div></div>
+        ${p.id === cfg.profile.id ? '' : `<button class="b sec" data-preset="${p.id}">Use this</button>`}</div>`).join('')}
+    </div>
+    <div class="mt"><button class="b sec" id="wizBtn">Run the family walkthrough</button></div></div>
+
   <div class="card"><h2>API keys</h2>
     <div class="dim">For automation — a home dashboard, a spreadsheet sync, a voice assistant. A key acts as you (its writes say so in the log), it cannot touch the kiosk, and it is shown <b>once</b> when created.</div>
     ${(sec.api_keys || []).map(k => `<div class="row" style="padding:6px 0;border-bottom:1px solid var(--line)">
@@ -436,6 +528,15 @@ async function vSettings() {
     <div class="mt">${sec.events.length ? sec.events.slice(0, 20).map(secRow).join('') : '<div class="dim">Nothing yet.</div>'}</div></div>`;
   $('#setNameBtn').onclick = async () => { await api('PUT', '/identity', { child_name: $('#setName').value }); toast(); };
   $('#view').querySelectorAll('[data-kill]').forEach(b => b.onclick = async () => { await api('DELETE', '/sessions/' + b.dataset.kill); toast('Signed out'); show(); });
+  $('#wizBtn').onclick = () => showWizard();
+  $('#view').querySelectorAll('[data-preset]').forEach(b => b.onclick = async () => {
+    await api('PUT', '/profile', { id: b.dataset.preset }); toast('Profile changed'); show();
+  });
+  $('#view').querySelectorAll('.capT').forEach(t => t.onchange = async () => {
+    const flags = {};
+    $('#view').querySelectorAll('.capT').forEach(c => flags[c.dataset.c] = c.checked);
+    try { await api('PUT', '/profile', { capabilities: flags }); toast(); show(); } catch {}
+  });
   $('#killAll').onclick = async () => {
     if (!confirm('Sign out every other device? They must sign in again.')) return;
     const out = await api('DELETE', '/sessions', {}); toast(`Signed out ${out.revoked}`); show();
