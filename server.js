@@ -32,6 +32,10 @@ const PUBLIC_DIR = process.env.PUBLIC_DIR || path.join(__dirname, 'public');
 // Leave it unset for plain-HTTP LAN deploys, where a Secure cookie would
 // break the console.
 const SECURE = process.env.SECURE_COOKIES === '1';
+// Shown in /healthz and stamped on exports so a family always knows which
+// build produced (or can read back) their data. The Docker image copies
+// package.json for exactly this.
+const VERSION = (() => { try { return require('./package.json').version || 'unknown'; } catch { return 'unknown'; } })();
 
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
@@ -931,6 +935,22 @@ function admin(req, res, url, body, user) {
     const kiosk_devices = db.prepare('SELECT label,last_used_at FROM kiosk_devices WHERE revoked_at IS NULL ORDER BY id').all();
     return json(res, 200, { kiosk_devices, events });
   }
+  // The family's data, in one document they own. No redaction: it requires a
+  // full admin session, and it is the human-readable half of the backup story
+  // (the encrypted blob, when encryption is on, is the byte-faithful half).
+  if (M === 'GET' && p === '/api/admin/export') {
+    const tables = {};
+    for (const { name } of db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all()) {
+      if (!/^[a-z_]+$/.test(name)) continue;   // our schema only, never anything odd
+      tables[name] = db.prepare(`SELECT * FROM "${name}"`).all();
+    }
+    logEvent('export', ip);
+    res.writeHead(200, {
+      'content-type': 'application/json', 'cache-control': 'no-store', ...SEC_HEADERS,
+      'content-disposition': `attachment; filename="behavior-dashboard-${localParts().date}.json"`,
+    });
+    return res.end(JSON.stringify({ app: 'behavior-dashboard', version: VERSION, exported_at: tsNow(), tables }));
+  }
   // Signed-in devices: visible, and killable individually. The sid is the
   // 12-char prefix of the stored hash — enough to match a row, never enough
   // to use one.
@@ -1190,7 +1210,7 @@ function admin(req, res, url, body, user) {
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
 const SEC_HEADERS = {
   'x-content-type-options': 'nosniff',
-  'content-security-policy': "default-src 'self'; style-src 'self' 'unsafe-inline'",
+  'content-security-policy': "default-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.github.com",
   'referrer-policy': 'no-referrer',
   'x-frame-options': 'DENY',
   // HSTS only when the app knows it is behind TLS (SECURE_COOKIES=1): sending
@@ -1216,7 +1236,7 @@ const server = http.createServer(async (req, res) => {
     // The probe is what says the SQLite volume still works: an app that answers
     // while its DB is locked or unreadable is not healthy.
     if (p === '/healthz') {
-      try { db.prepare('SELECT 1 AS ok').get(); return json(res, 200, { ok: true, db: true }); }
+      try { db.prepare('SELECT 1 AS ok').get(); return json(res, 200, { ok: true, db: true, version: VERSION }); }
       catch (e) { return json(res, 503, { ok: false, error: clampStr(e.message, 120) }); }
     }
     if (p.startsWith('/api/admin/')) {

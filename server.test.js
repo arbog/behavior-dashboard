@@ -366,3 +366,22 @@ test('X-Forwarded-For is trusted only from private peers', () => {
     assert.equal(isPrivateAddr(a), false, `${a} should not be private`);
   }
 });
+
+// ---- 0010: export + version ----
+test('the family can take their data: export endpoint, healthz version', async () => {
+  const h = await call('GET', '/healthz');
+  assert.ok(h.body.version && /\d+\.\d+\.\d+/.test(h.body.version), 'healthz carries the app version');
+  const x = await fetch(base + '/api/admin/export', { headers: { cookie } });
+  assert.equal(x.status, 200);
+  assert.ok(/attachment/.test(x.headers.get('content-disposition') || ''), 'export is an attachment');
+  assert.ok(/behavior-dashboard-\d{4}-\d\d-\d\d\.json/.test(x.headers.get('content-disposition')), 'dated filename');
+  const body = await x.json();
+  assert.equal(body.app, 'behavior-dashboard');
+  assert.equal(body.version, h.body.version);
+  assert.ok(body.exported_at, 'export is timestamped');
+  for (const t of ['modes', 'settings', 'day_items', 'abc_events', 'security_events', 'sessions', 'kiosk_devices']) {
+    assert.ok(Array.isArray(body.tables[t]), `export includes ${t}`);
+  }
+  assert.ok(body.tables.modes.length >= 4, 'the seeded modes are in the export');
+  assert.equal((await kioskRaw('GET', '/api/admin/export')).status, 401, 'export without a session is closed');
+});

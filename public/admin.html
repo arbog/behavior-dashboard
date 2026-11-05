@@ -86,7 +86,7 @@
 <div id="auth" hidden>
   <div class="card" id="authCard"></div>
 </div>
-<header><h1>Behavior Board — Admin</h1><span id="stat" class="dim" style="font-size:14px"></span><a href="/" target="_blank">Open kiosk ↗</a></header>
+<header><h1>Behavior Board — Admin</h1><span id="stat" class="dim" style="font-size:14px"></span><span id="ver" class="dim" style="font-size:13px"></span><a href="/" target="_blank">Open kiosk ↗</a></header>
 <nav id="nav"></nav>
 <main id="view"></main>
 <div class="toast" id="toast">Saved</div>
@@ -362,6 +362,10 @@ async function vSettings() {
       <span style="width:140px;font-weight:600;${e.ok ? '' : 'color:var(--bad)'}">${esc(e.kind)}${e.ok ? '' : ' ✗'}</span>
       <span class="dim grow">${esc(e.detail || '—')}</span><span class="dim" style="white-space:nowrap">${esc(e.ip)}</span></div>`;
   $('#view').innerHTML = `
+  <div class="card"><h2>Your data</h2>
+    <div class="dim">Everything this board knows, in one JSON file you own — schedules, marks, battery, check-ins, the ABC log, all of it. Take it whenever you like; it is the readable half of your backup.</div>
+    <div class="mt"><a class="b" id="dl" href="/api/admin/export" download>Download my data</a></div></div>
+
   <div class="card"><h2>Child</h2>
     <div class="row"><input id="setName" class="grow" maxlength="40" value="${esc(cfg.identity.child_name)}" placeholder="Shown on the kiosk and in scripts">
       <button class="b" id="setNameBtn">Save</button></div>
@@ -609,6 +613,23 @@ async function vHistory() {
   if (status === 200 && me.setup) { showAuth(); return; }
   if (status === 401) { showAuth(); return; }
   show();
+  // Version + update nudge: current version always; a newer release noted
+  // when GitHub says so. Fail silent — an offline board must not nag or error.
+  try {
+    const v = (await (await fetch('/healthz')).json()).version || '';
+    const el = document.getElementById('ver');
+    if (!el) return;
+    el.textContent = 'v' + v;
+    const r = await fetch('https://api.github.com/repos/arbog/behavior-dashboard/releases/latest', { signal: AbortSignal.timeout(3000) });
+    if (!r.ok) return;
+    const tag = String(((await r.json()) || {}).tag_name || '').replace(/^v/, '');
+    const num = s => String(s).split('.').map(x => parseInt(x, 10) || 0);
+    const a = num(v), b = num(tag);
+    const newer = b[0] > a[0] || (b[0] === a[0] && b[1] > a[1]) || (b[0] === a[0] && b[1] === a[1] && b[2] > a[2]);
+    if (tag && newer) {
+      el.innerHTML = `v${esc(v)} · <a href="https://github.com/arbog/behavior-dashboard/releases" target="_blank" style="color:var(--star)">new version available: v${esc(tag)}</a>`;
+    }
+  } catch { /* offline, rate-limited, or no releases yet: say nothing */ }
 })();
 </script>
 </body>
