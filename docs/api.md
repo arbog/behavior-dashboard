@@ -93,6 +93,19 @@ Identity & copy (what the family words):
 | `PUT /api/admin/protocol` | `{proactive[], behavior[], hold, script_rule, script, checkin_minutes}` |
 | `PUT /api/admin/profile` | `{id}` switches the capability preset (resets the flags); `{capabilities}` refines them (`{rules:false, …}`) — flags live on every config + kiosk payload as `profile` / `caps` |
 
+Passkeys (WebAuthn — a second way to mint the same admin session; the password stays as recovery):
+
+| Method & path | Auth | Purpose |
+|---|---|---|
+| `GET /api/admin/webauthn/begin-registration` | session | `PublicKeyCredential` options (`challenge`, `rpId`, `user`, `pubKeyCredParams`) |
+| `POST /api/admin/webauthn/finish-registration` | session | `{challenge, name, response}` → `{id, name}` — attestation verified structurally (`attestation: none`) |
+| `GET /api/admin/webauthn/begin-authentication` | open | `{challenge, rpId}` — 404 until a passkey exists |
+| `POST /api/admin/webauthn/finish-authentication` | open | `{challenge, id, response}` → `200` + Set-Cookie; signature + sign-count checked, 10/min/IP |
+| `GET /api/admin/webauthn/credentials` | session | enrolled passkeys (no key material) + the board's `rp_id` |
+| `DELETE /api/admin/webauthn/credentials/:id` | session | remove a passkey |
+
+Changing the board's domain (or `BD_RP_ID`) invalidates every passkey — a config change plus re-enrollment.
+
 Security & data:
 
 | Method & path | Purpose |

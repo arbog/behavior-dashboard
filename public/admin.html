@@ -118,6 +118,29 @@ async function api(method, url, body) {
   }
   return r.json();
 }
+
+// ---- passkeys (0016): client half of WebAuthn. The server returns base64url
+// strings; navigator.credentials wants ArrayBuffers and answers with bytes —
+// these three helpers are the whole translation layer.
+const b64uToBuf = s => Uint8Array.from(atob(String(s).replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0)).buffer;
+const bufToB64u = b => btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const credResponse = c => ({
+  id: c.id, type: c.type, rawId: bufToB64u(c.rawId),
+  response: {
+    clientDataJSON: bufToB64u(c.response.clientDataJSON),
+    ...(c.response.attestationObject ? { attestationObject: bufToB64u(c.response.attestationObject) } : {}),
+    ...(c.response.authenticatorData ? { authenticatorData: bufToB64u(c.response.authenticatorData) } : {}),
+    ...(c.response.signature ? { signature: bufToB64u(c.response.signature) } : {}),
+  },
+});
+const credRequest = o => ({
+  challenge: b64uToBuf(o.challenge),
+  rp: o.rp, user: { ...o.user, id: b64uToBuf(o.user.id) },
+  pubKeyCredParams: o.pubKeyCredParams, timeout: o.timeout,
+  authenticatorSelection: o.authenticatorSelection, attestation: o.attestation,
+  ...(o.allowCredentials ? { allowCredentials: o.allowCredentials.map(c => ({ type: c.type, id: b64uToBuf(c.id) })) } : {}),
+  rpId: o.rpId, userVerification: o.userVerification,
+});
 function toast(t = 'Saved') { const e = $('#toast'); e.textContent = t; e.classList.add('show'); setTimeout(() => e.classList.remove('show'), 1200); }
 
 // ---------- auth (login / first-time setup) ----------
@@ -136,7 +159,8 @@ async function showAuth() {
     : `<h1>Sign in</h1>
        <div class="dim">This console is private. The kiosk code is not the same thing — it lives on the board itself.</div>
        <div class="mt"><input id="auPw" type="password" placeholder="Password" autocomplete="current-password"></div>
-       <div class="mt"><button class="b" id="auGo" style="width:100%">Sign in</button></div>`;
+       <div class="mt"><button class="b" id="auGo" style="width:100%">Sign in</button></div>
+       ${'window.PublicKeyCredential' in window ? '<button class="b sec" id="auPk" style="width:100%;margin-top:6px">Sign in with a passkey</button><div class="dim mt" id="auPkMsg" style="font-size:13px"></div>' : ''}`;
   $('#auGo').onclick = async () => {
     try {
       // the session arrives as an HttpOnly Set-Cookie; the browser stores it,
@@ -151,6 +175,20 @@ async function showAuth() {
       show();
     } catch (e) { /* network */ }
   };
+  $('#auPk')?.addEventListener('click', async () => {
+    const msg = $('#auPkMsg');
+    try {
+      const opt = await (await fetch('/api/admin/webauthn/begin-authentication', { credentials: 'same-origin' })).json();
+      if (opt.error) { msg.textContent = opt.error; return; }
+      const a = await navigator.credentials.get({ publicKey: { challenge: b64uToBuf(opt.challenge), rpId: opt.rpId, timeout: opt.timeout, userVerification: opt.userVerification } });
+      const fin = await fetch('/api/admin/webauthn/finish-authentication', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ challenge: opt.challenge, id: a.id, response: credResponse(a).response }) });
+      if (!fin.ok) { const e = await fin.json().catch(() => ({})); msg.textContent = e.error || 'Passkey did not work'; return; }
+      $('#auth').hidden = true; show();
+    } catch (e) {
+      msg.textContent = e.name === 'NotAllowedError' ? 'Cancelled, or no passkey on this device — use your password.' : 'Passkeys unavailable in this browser.';
+    }
+  });
   setTimeout(() => $('#auPw')?.focus(), 50);
 }
 
@@ -435,7 +473,7 @@ function vWeek() {
 
 // ---------- Settings: identity, security, battery copy, rewards, protocol ----------
 async function vSettings() {
-  const [sec, sess, kdev] = await Promise.all([api('GET', '/security'), api('GET', '/sessions'), api('GET', '/kiosk-devices')]);
+  const [sec, sess, kdev, pk] = await Promise.all([api('GET', '/security'), api('GET', '/sessions'), api('GET', '/kiosk-devices'), api('GET', '/webauthn/credentials').catch(() => ({ keys: [] }))]);
   const secRow = e => `<div class="row" style="padding:6px 0;border-bottom:1px solid var(--line);gap:10px">
       <span class="dim" style="width:52px">${esc(String(e.ts).slice(5, 16))}</span>
       <span style="width:140px;font-weight:600;${e.ok ? '' : 'color:var(--bad)'}">${esc(e.kind)}${e.ok ? '' : ' ✗'}</span>
@@ -511,6 +549,17 @@ async function vSettings() {
     </div>
     <div class="mt"><button class="b sec" id="wizBtn">Run the family walkthrough</button></div></div>
 
+  <div class="card"><h2>Passkeys</h2>
+    <div class="dim">Sign in to this console with your face, fingerprint, or device PIN instead of the password. The password still works — keep it written down; it is the recovery path if every device with a passkey is lost. Changing your board's domain signs out all passkeys.</div>
+    ${(pk.keys || []).map(k => `<div class="row" style="padding:6px 0;border-bottom:1px solid var(--line)">
+      <span style="width:170px;font-weight:600">${esc(k.name)}</span>
+      <span class="dim grow">created ${esc(String(k.created_at).slice(0, 16))} · last used ${esc(String(k.last_used_at || '—').slice(5, 16))}</span>
+      ${k.revoked_at ? '<span class="tag">removed</span>' : `<button class="b sec" data-pkrev="${k.id}" data-pkname="${esc(k.name)}">Remove</button>`}</div>`).join('') || '<div class="dim">No passkeys yet.</div>'}
+    <div class="row mt"><input id="pkName" class="grow" maxlength="40" placeholder="Passkey name — Dad's phone">
+      <button class="b" id="pkAdd" ${'window.PublicKeyCredential' in window ? '' : 'hidden'}>Add passkey</button></div>
+    ${'window.PublicKeyCredential' in window ? '' : '<div class="dim mt" style="font-size:13px">This browser cannot do passkeys.</div>'}
+  </div>
+
   <div class="card"><h2>API keys</h2>
     <div class="dim">For automation — a home dashboard, a spreadsheet sync, a voice assistant. A key acts as you (its writes say so in the log), it cannot touch the kiosk, and it is shown <b>once</b> when created.</div>
     ${(sec.api_keys || []).map(k => `<div class="row" style="padding:6px 0;border-bottom:1px solid var(--line)">
@@ -552,6 +601,18 @@ async function vSettings() {
   $('#view').querySelectorAll('[data-revoke]').forEach(b => b.onclick = async () => {
     if (!confirm(`Revoke “${b.dataset.label}”? That kiosk must be given a new code.`)) return;
     await api('DELETE', '/kiosk-devices/' + b.dataset.revoke); toast('Device revoked'); show();
+  });
+  $('#pkAdd').onclick = async () => {
+    try {
+      const opts = await api('GET', '/webauthn/begin-registration');
+      const c = await navigator.credentials.create({ publicKey: credRequest({ ...opts, rp: { name: opts.rpId }, user: { id: opts.user.id, name: opts.user.name, displayName: opts.user.name } }) });
+      await api('POST', '/webauthn/finish-registration', { challenge: opts.challenge, name: $('#pkName').value, response: credResponse(c) });
+      toast('Passkey added'); show();
+    } catch (e) { if (String(e.message) !== 'api') toast('Passkey not added' + (e.name ? ' (' + e.name + ')' : '')); }
+  };
+  $('#view').querySelectorAll('[data-pkrev]').forEach(b => b.onclick = async () => {
+    if (!confirm(`Remove the passkey “${b.dataset.pkname}”? The password still works.`)) return;
+    await api('DELETE', '/webauthn/credentials/' + b.dataset.pkrev); toast('Passkey removed'); show();
   });
   $('#axAdd').onclick = async () => {
     const out = await api('POST', '/api-keys', { name: $('#axName').value });
