@@ -72,7 +72,7 @@
   .list { padding:0; display:flex; flex-direction:column; }
   /* head and rows share one grid: the time column and the two mark columns line up
      all the way down the list */
-  .list .head, .row { display:grid; grid-template-columns:minmax(0,1fr) 6vmin 9vmin 9vmin;
+  .list .head, .row { display:grid; grid-template-columns:var(--gridcols, minmax(0,1fr) 6vmin 9vmin 9vmin);
     align-items:center; gap:1.1vmin; padding:0 1.5vmin; }
   .list .head { padding-top:.5vmin; padding-bottom:.3vmin; border-bottom:var(--bw) solid var(--line); flex:none; }
   .list .head span { font-size:1.55vmin; color:var(--dim); font-weight:800; line-height:1.12; text-align:center; }
@@ -211,7 +211,7 @@
   <main>
     <section class="card now" id="now"></section>
     <section class="card list">
-      <div class="head"><span>My day</span><span></span><span>Did I finish?</span><span>Rules?</span></div>
+      <div class="head"><span>My day</span><span></span><span>Did I finish?</span><span class="rhead">Rules?</span></div>
       <div class="rows" id="rows"></div>
     </section>
   </main>
@@ -285,11 +285,13 @@ function render() {
   // --n is how many rows share the list's height: row type is sized from the row
   // itself (cqh / --n), so a long day goes smaller instead of scrolling out of view.
   $('rows').style.setProperty('--n', S.items.length || 1);
+  document.querySelector('.list .rhead').style.display = C.rules ? '' : 'none';
+  document.querySelector('.list').style.setProperty('--gridcols', C.rules ? '' : 'minmax(0,1fr) 6vmin 9vmin');
   $('rows').innerHTML = S.items.map(i => `
     <div class="row ${cur && cur.id === i.id ? 'cur' : ''}" data-id="${i.id}">
       <div class="t"><span class="ic">${esc(i.icon)}</span><span class="tx">${esc(i.title)}</span></div>
       <div class="tm">${esc(i.start || '')}</div>
-      <div class="mark">${markFinish(i)}</div><div class="mark">${markRules(i)}</div>
+      <div class="mark">${markFinish(i)}</div>${C.rules ? `<div class="mark">${markRules(i)}</div>` : ''}
     </div>`).join('');
   $('rows').querySelectorAll('.row').forEach(r => r.onclick = () => {
     const it = S.items.find(x => x.id == r.dataset.id);
@@ -306,18 +308,28 @@ function render() {
   } else {
     $('now').className = 'card now done' + (tight ? ' tight' : '');
     $('now').innerHTML = `${tight ? '' : '<div class="icon">🌟</div>'}<div class="title">${tight ? '🌟 ' : ''}All done!</div>
-      <div class="meta">${S.reward.pending ? 'Waiting for a grown-up to check the rules' : 'Great job today' + (S.child_name ? ', ' + esc(S.child_name) : '') + '!'}</div>`;
+      <div class="meta">${C.rules && S.reward.pending ? 'Waiting for a grown-up to check the rules' : 'Great job today' + (S.child_name ? ', ' + esc(S.child_name) : '') + '!'}</div>`;
   }
-  // battery: lines, read-only here — a grown-up moves them, the child reads them
-  const b = S.battery;
-  $('batt').innerHTML = `<h4 class="hd">My battery</h4>
-    <div class="row1"><div class="name" style="color:${b.band.color}">${esc(b.band.name)}</div>
-      <div class="segs">${Array.from({ length: b.max }, (_, i) => `<i style="${i < b.lines ? `background:${b.band.color};border-color:${b.band.color}` : ''}"></i>`).join('')}</div>
-      <div class="cap">${b.lines} of ${b.max}</div></div>`;
-  $('rules').innerHTML = `<h4 class="hd">Being in control means</h4><ol>${S.rules.map(r =>
+  // The profile decides what this kiosk renders (0013). A picture of the day
+  // — schedule, plans, choices — is the floor; everything else hides when the
+  // family switched it off. Cards keep their slots only while they exist.
+  const C = S.caps || { tools: true, rewards: true, battery: true, rules: true };
+  if (C.battery) {
+    const b = S.battery || { lines: 0, max: 1, band: { name: '', color: 'var(--dim)' } };
+    $('batt').innerHTML = `<h4 class="hd">My battery</h4>
+      <div class="row1"><div class="name" style="color:${b.band.color}">${esc(b.band.name)}</div>
+        <div class="segs">${Array.from({ length: b.max }, (_, i) => `<i style="${i < b.lines ? `background:${b.band.color};border-color:${b.band.color}` : ''}"></i>`).join('')}</div>
+        <div class="cap">${b.lines} of ${b.max}</div></div>`;
+  }
+  if (C.rules) $('rules').innerHTML = `<h4 class="hd">Being in control means</h4><ol>${S.rules.map(r =>
     `<li>${esc(r.icon)} ${esc(r.title)}${r.body ? ` <small>— ${esc(r.body)}</small>` : ''}</li>`).join('')}</ol>`;
-  $('tools').innerHTML = S.tools.map(t => `<button class="chip ${t.used ? 'used' : ''}" data-id="${t.id}">${esc(t.icon)} ${esc(t.label)}</button>`).join('');
-  $('tools').querySelectorAll('.chip').forEach(b => b.onclick = () => useTool(Number(b.dataset.id)));
+  document.querySelector('.strip').style.display = C.battery || C.rules ? '' : 'none';
+  if (C.tools) {
+    $('tools').innerHTML = S.tools.map(t => `<button class="chip ${t.used ? 'used' : ''}" data-id="${t.id}">${esc(t.icon)} ${esc(t.label)}</button>`).join('');
+    $('tools').querySelectorAll('.chip').forEach(b => b.onclick = () => useTool(Number(b.dataset.id)));
+  }
+  document.querySelector('footer .card.tools').style.display = C.tools ? '' : 'none';
+
   // "Pause any reinforcement that may be going on" — and the way back
   // The week ahead, and what today is. The banner is one slot: a paused reward
   // outranks the day's plan, which outranks a tool just used.
@@ -332,23 +344,25 @@ function render() {
       + (S.plan.note ? ` — ${S.plan.note}` : '')
     : '';
   const ban = $('banner');
-  const said = S.pause.active
+  const said = (C.pause && S.pause && S.pause.active)
     ? (S.pause.resume_ready
       ? '✅ You used a tool and checked in. A grown-up can turn the fun back on now.'
       : `🛑 ${S.pause.reason ? S.pause.reason + ' — ' : ''}Rewards are paused. Use a tool, then check in with a grown-up.`)
     : (planNote || S.calmMsg || '');
   // an empty banner stays in the layout (hollow, not gone) so the bands never jump
   ban.className = 'banner' + (said ? '' : ' hollow')
-    + (S.pause.resume_ready ? ' ready' : (S.pause.active ? '' : planNote ? ' plan' : ''));
+    + (C.pause && S.pause && S.pause.resume_ready ? ' ready' : (C.pause && S.pause && S.pause.active ? '' : planNote ? ' plan' : ''));
   ban.textContent = said;
-  $('why').innerHTML = S.rewards.map(r => `<div>• ${esc(r)}</div>`).join('');
+  $('why').innerHTML = C.rewards ? S.rewards.map(r => `<div>• ${esc(r)}</div>`).join('') : '';
+  $('why').style.display = C.rewards ? '' : 'none';
   $('chips').innerHTML = S.choices.map(c => `<button class="chip ${S.day.working_for === c.label ? 'sel' : ''}" data-l="${esc(c.label)}">${esc(c.icon)} ${esc(c.label)}</button>`).join('');
   $('chips').querySelectorAll('.chip').forEach(b => b.onclick = () => post('/api/today/choice', { label: S.day.working_for === b.dataset.l ? '' : b.dataset.l }));
   const r = S.reward;
   const tierTxt = { all: 'ALL CHECKS! 🌟', one: '1 X', two: '2 or more X' }[r.tier];
-  $('earn').innerHTML = `<h3 class="hd">Time I earned</h3>
+  $('earn').innerHTML = C.rewards ? `<h3 class="hd">Time I earned</h3>
     <div class="amt"><div class="min">${r.minutes}<small> min</small></div><div class="tier ${r.tier}">${tierTxt}</div></div>
-    <div class="proj">${r.final ? 'final' : r.projected > r.minutes ? `finish the rest clean for ${r.projected} min` : r.pending + ' to go'}</div>`;
+    <div class="proj">${r.final ? 'final' : r.projected > r.minutes ? `finish the rest clean for ${r.projected} min` : r.pending + ' to go'}</div>`
+    : `<div class="hd">The day is done</div>`;
 }
 async function post(url, body) {
   try {
@@ -366,7 +380,7 @@ async function useTool(id) {
     const r = await fetch(`/api/today/tools/${id}/use`, { method: 'POST', headers: apiHeaders(), body: '{}' });
     if (r.status === 401) { showGate(); return; }
     const j = await r.json();
-    const keep = j.pause.active ? '' : `${t.icon} ${t.label} — nice. That helps me stay in control.`;
+    const keep = (j.caps?.pause && j.pause.active) ? '' : `${t.icon} ${t.label} — nice. That helps me stay in control.`;
     S = Object.assign({}, j, { calmMsg: keep });
     render();
     clearTimeout(useTool.t); clearTimeout(useTool.hard);

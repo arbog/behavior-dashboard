@@ -20,6 +20,13 @@ An API key acts as the admin (its writes are attributed `api:<name>` in the
 audit). Keys cannot reach the kiosk surface. The kiosk code cannot reach the
 console. Errors are `{ "error": "message" }`.
 
+**Capabilities (0013).** Every board keeps a picture of the day — schedule,
+plans, choices. Seven parts can be switched off by the board profile: `tools`,
+`rewards`, `battery`, `rules`, `abc`, `checkins`, `pause`. An endpoint whose
+capability is off answers `404` (`"that part of the board is switched off in
+this profile"`), and payloads omit its data (the kiosk payload carries the
+whole flag set as `caps`; the console config carries `profile`).
+
 ## Open (no credential)
 
 | Method & path | Purpose | Response |
@@ -84,7 +91,7 @@ Identity & copy (what the family words):
 | `PUT /api/admin/bands` | `{bands: [{name,note,color} ×4]}` battery band wording |
 | `PUT /api/admin/rewards` | `{lines: [...]}` the kiosk's how-it-works strip |
 | `PUT /api/admin/protocol` | `{proactive[], behavior[], hold, script_rule, script, checkin_minutes}` |
-| `PUT /api/admin/profile` | `{id}` — switch capability preset (0013+) |
+| `PUT /api/admin/profile` | `{id}` switches the capability preset (resets the flags); `{capabilities}` refines them (`{rules:false, …}`) — flags live on every config + kiosk payload as `profile` / `caps` |
 
 Security & data:
 

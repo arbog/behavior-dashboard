@@ -451,3 +451,73 @@ test('docs/api.md documents every route the server handles', () => {
   const missing = [...paths].filter(p => p !== '/api/admin/me' || true).map(p => renames[p] || p).filter(p => !doc.includes(p));
   assert.deepEqual(missing, [], `docs/api.md is missing routes: ${missing.join(', ')}`);
 });
+
+// ---- 0013: board-capability model + profile presets ----
+test('the preset table is the research, in flags', () => {
+  const PROFILE_FLAGS = id => { const { choices, ...rest } = require('./server.js').profileFlags(id); return rest; };
+  // standard keeps everything; every other profile drops the scoring machinery
+  assert.deepEqual(PROFILE_FLAGS('standard'), { tools: true, rewards: true, battery: true, rules: true, abc: true, checkins: true, pause: true });
+  assert.deepEqual(PROFILE_FLAGS('gentle'), { tools: false, rewards: true, battery: false, rules: false, abc: false, checkins: false, pause: false }, 'gentle: the day, not the mistakes');
+  assert.deepEqual(PROFILE_FLAGS('communication'), { tools: true, rewards: false, battery: false, rules: false, abc: false, checkins: false, pause: false }, 'communication: a voice, no scoring');
+  assert.deepEqual(PROFILE_FLAGS('anxiety'), { tools: true, rewards: false, battery: false, rules: false, abc: false, checkins: true, pause: false }, 'anxiety: self-report stays, battery goes');
+  assert.deepEqual(PROFILE_FLAGS('transitions'), { tools: true, rewards: true, battery: false, rules: false, abc: false, checkins: false, pause: false });
+  assert.deepEqual(PROFILE_FLAGS('sensory'), { tools: true, rewards: false, battery: false, rules: false, abc: false, checkins: false, pause: false });
+  assert.deepEqual(PROFILE_FLAGS('routines'), { tools: false, rewards: true, battery: false, rules: false, abc: false, checkins: false, pause: false });
+  assert.equal(PROFILE_FLAGS('no-such-profile').battery, true, 'an unknown id falls back to the standard board, which has everything');
+  assert.equal(require('./server.js').profileFlags('gentle').choices, true, 'choices are the floor: every profile has them');
+});
+test('profiles gate the console: config payload, 404s, and the audit', async () => {
+  // start from standard: everything present
+  let cfgBody = await call('GET', '/api/admin/config');
+  assert.equal(cfgBody.body.profile.id, 'standard');
+  assert.ok(cfgBody.body.regulation, 'standard has regulation');
+  assert.equal((await call('POST', '/api/admin/battery', { delta: 1 })).status, 200);
+  // switch to gentle: no battery, no rules, no ABC, no pause
+  const sw = await call('PUT', '/api/admin/profile', { id: 'gentle' });
+  assert.equal(sw.status, 200);
+  assert.equal(sw.body.profile.id, 'gentle');
+  cfgBody = await call('GET', '/api/admin/config');
+  assert.equal(cfgBody.body.regulation, null, 'no regulation block when its capabilities are all off');
+  assert.deepEqual(cfgBody.body.abc_options, { A: [], B: [], C: [] });
+  assert.equal((await call('POST', '/api/admin/battery', { delta: 1 })).status, 404);
+  assert.equal((await call('POST', '/api/admin/pause', { reason: 'x' })).status, 404);
+  assert.equal((await call('POST', '/api/admin/abc', { behaviors: ['a'] })).status, 404);
+  assert.equal((await call('PUT', '/api/admin/rules', { rules: [] })).status, 404);
+  assert.equal((await call('GET', '/api/admin/abc')).status, 404);
+  assert.equal((await call('GET', '/api/admin/regulation')).status, 404);
+  assert.equal((await call('PUT', '/api/admin/identity', { child_name: 'Sam' })).status, 200, 'the floor never closes: identity, modes, calendar stay open');
+  assert.equal((await call('POST', '/api/admin/modes', { name: 'Any day', emoji: '📅' })).status, 200);
+  // unknown capability and unknown id are 400s
+  assert.equal((await call('PUT', '/api/admin/profile', { id: 'bogus' })).status, 400);
+  assert.equal((await call('PUT', '/api/admin/profile', { capabilities: { fridge: true } })).status, 400);
+  // refine: turn rewards off a gentle board
+  const ref = await call('PUT', '/api/admin/profile', { capabilities: { rewards: false } });
+  assert.equal(ref.body.profile.rewards, false);
+  assert.equal(ref.body.profile.id, 'gentle', 'a refinement keeps the preset id');
+  // switching presets without an explicit map resets the refinements
+  const back = await call('PUT', '/api/admin/profile', { id: 'anxiety' });
+  assert.equal(back.body.profile.rewards, false, 'anxiety preset itself has no rewards');
+  const std = await call('PUT', '/api/admin/profile', { id: 'standard' });
+  assert.equal(std.body.profile.battery, true, 'back to standard, everything on');
+  assert.equal((await call('POST', '/api/admin/battery', { delta: 1 })).status, 200);
+  const sec = await call('GET', '/api/admin/security');
+  assert.ok(sec.body.events.some(e => e.kind === 'profile_change'), 'the profile switch is on the record');
+});
+test('profiles gate the kiosk: payload omits, endpoints close', async () => {
+  await call('PUT', '/api/admin/profile', { id: 'gentle' });
+  const t = await kioskRaw('GET', '/api/today', undefined, kiosk);
+  assert.equal(t.status, 200);
+  assert.equal(t.body.battery, undefined, 'no battery in the payload');
+  assert.equal(t.body.pause, undefined, 'no pause in the payload');
+  assert.deepEqual(t.body.rules, [], 'rules list is empty');
+  assert.deepEqual(t.body.tools, [], 'tools list is empty');
+  assert.ok(t.body.rewards.length, 'gentle keeps its reward lines');
+  assert.ok(t.body.caps && t.body.caps.battery === false && t.body.caps.choices === true, 'the kiosk payload carries the flag set');
+  assert.ok(t.body.choices.length, 'choices — the floor — still render');
+  assert.equal((await kioskRaw('POST', `/api/today/tools/1/use`, {}, kiosk)).status, 404, 'tool taps are closed with tools off');
+  // anxiety: tools come back (the calm-down menu), pause stays off
+  await call('PUT', '/api/admin/profile', { id: 'anxiety' });
+  const t2 = await kioskRaw('GET', '/api/today', undefined, kiosk);
+  assert.ok(t2.body.caps.tools, 'anxiety keeps the calm-down menu');
+  await call('PUT', '/api/admin/profile', { id: 'standard' });
+});
