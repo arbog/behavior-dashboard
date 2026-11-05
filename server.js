@@ -534,12 +534,22 @@ function noteKioskUse(ip) {
 
 // In-memory sliding-window rate limits (per install; the app is single-user).
 const limits = new Map();
+const LIMIT_KEYS_MAX = 4096;   // bound the map: keys are attacker-influenced IPs
 function rateLimit(key, limit, windowMs) {
   const now = Date.now();
   const arr = (limits.get(key) || []).filter(t => now - t < windowMs);
+  // An exposed board sees distinct source addresses forever; without a sweep
+  // the Map grows without bound (one small array per IP, never evicted).
+  if (limits.size > LIMIT_KEYS_MAX) sweepLimits(now);
   if (arr.length >= limit) { limits.set(key, arr); return false; }
   arr.push(now); limits.set(key, arr);
   return true;
+}
+function sweepLimits(now = Date.now()) {
+  // 60 s is the widest window any caller uses; an entry whose newest hit is
+  // older than that contributes nothing and can go.
+  for (const [k, arr] of limits) if (!arr.length || now - arr[arr.length - 1] > 60000) limits.delete(k);
+  for (const [k, l] of lockouts) if (l.until > 0 && l.until <= now) lockouts.delete(k);
 }
 const lockouts = new Map();   // key -> { n, until }
 function loginAllowed(ip) {
@@ -556,9 +566,33 @@ function loginFailed(ip) {
   if (l.n >= 5) { l.until = Date.now() + 15 * 60000; l.n = 0; }
   lockouts.set(ip, l);
 }
+// Trust X-Forwarded-For only when the direct peer is private/loopback — i.e.
+// when the app is behind a proxy it can actually see (LAN reverse proxy, PaaS
+// sidecar, Tailscale). A directly-exposed board must ignore a client-supplied
+// header, or the per-IP limits become trivially evadable by rotating it.
+function isPrivateAddr(a) {
+  if (!a) return false;
+  const s = String(a).toLowerCase().replace(/^::ffff:/, '');
+  if (s === '::1' || s === '127.0.0.1' || s.startsWith('127.')) return true;
+  if (s.startsWith('10.') || s.startsWith('192.168.')) return true;
+  if (s.startsWith('100.')) {                      // 100.64.0.0/10 (Tailscale)
+    const o2 = Number(s.split('.')[1]);
+    if (o2 >= 64 && o2 <= 127) return true;
+  }
+  if (s.startsWith('172.')) {                      // 172.16.0.0/12
+    const o2 = Number(s.split('.')[1]);
+    if (o2 >= 16 && o2 <= 31) return true;
+  }
+  if (s.startsWith('fc') || s.startsWith('fd')) return true;   // fc00::/7
+  return false;
+}
 function clientIp(req) {
-  const xf = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
-  return xf || req.socket.remoteAddress || 'unknown';
+  const peer = req.socket?.remoteAddress || '';
+  if (isPrivateAddr(peer)) {
+    const xf = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+    if (xf) return xf;
+  }
+  return peer || 'unknown';
 }
 
 // ---------- kiosk API (token-gated) ----------
@@ -1149,4 +1183,4 @@ if (!getSetting('admin_hash') && !getSetting('setup_token_hash')) {
 if (require.main === module) {
   server.listen(PORT, () => console.log(`behavior-dashboard listening on :${PORT} (db ${DB_PATH})`));
 }
-module.exports = { server, db, itemStatus, reward, riskFromLevels, batteryView, BATTERY_LINES, hashPassword, verifyPassword };
+module.exports = { server, db, itemStatus, reward, riskFromLevels, batteryView, BATTERY_LINES, hashPassword, verifyPassword, clientIp, isPrivateAddr };

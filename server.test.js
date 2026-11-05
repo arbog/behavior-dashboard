@@ -276,3 +276,25 @@ test('the kiosk page and admin page shells are public; their data is not', async
   assert.equal((await fetch(base + '/admin')).status, 200);
   assert.equal((await fetch(base + '/definitely-not-a-page')).status, 404);
 });
+
+// ---- 0005: XFF trust model + limiter hygiene ----
+test('X-Forwarded-For is trusted only from private peers', () => {
+  const { clientIp, isPrivateAddr } = require('./server.js');
+  const fake = (peer, xff) => ({ headers: xff ? { 'x-forwarded-for': xff } : {}, socket: { remoteAddress: peer } });
+  // behind a proxy we can see: honour the forwarded client
+  assert.equal(clientIp(fake('127.0.0.1', '203.0.113.9')), '203.0.113.9');
+  assert.equal(clientIp(fake('::ffff:127.0.0.1', '8.8.4.4')), '8.8.4.4');
+  assert.equal(clientIp(fake('10.0.0.5', '1.2.3.4')), '1.2.3.4');
+  assert.equal(clientIp(fake('172.20.1.9', '1.2.3.4')), '1.2.3.4');
+  assert.equal(clientIp(fake('100.86.0.5', '1.2.3.4')), '1.2.3.4', 'tailscale peers are trusted');
+  // directly exposed: the header is attacker-controlled, ignore it
+  assert.equal(clientIp(fake('203.0.113.9', '10.0.0.1')), '203.0.113.9');
+  assert.equal(clientIp(fake('47.6.169.128', '198.51.100.7')), '47.6.169.128');
+  // the classifier itself
+  for (const a of ['10.1.2.3', '172.16.0.1', '172.31.255.255', '192.168.1.1', '127.0.0.1', '::1', '100.64.0.1', '100.127.255.254', 'fc00::1', '::ffff:10.0.0.1']) {
+    assert.ok(isPrivateAddr(a), `${a} should be private`);
+  }
+  for (const a of ['8.8.8.8', '172.32.0.1', '100.128.0.1', '203.0.113.9', '']) {
+    assert.equal(isPrivateAddr(a), false, `${a} should not be private`);
+  }
+});
