@@ -473,7 +473,7 @@ function vWeek() {
 
 // ---------- Settings: identity, security, battery copy, rewards, protocol ----------
 async function vSettings() {
-  const [sec, sess, kdev, pk] = await Promise.all([api('GET', '/security'), api('GET', '/sessions'), api('GET', '/kiosk-devices'), api('GET', '/webauthn/credentials').catch(() => ({ keys: [] }))]);
+  const [sec, sess, kdev, pk, pkc] = await Promise.all([api('GET', '/security'), api('GET', '/sessions'), api('GET', '/kiosk-devices'), api('GET', '/webauthn/credentials').catch(() => ({ keys: [] })), api('GET', '/consent')]);
   const secRow = e => `<div class="row" style="padding:6px 0;border-bottom:1px solid var(--line);gap:10px">
       <span class="dim" style="width:52px">${esc(String(e.ts).slice(5, 16))}</span>
       <span style="width:140px;font-weight:600;${e.ok ? '' : 'color:var(--bad)'}">${esc(e.kind)}${e.ok ? '' : ' ✗'}</span>
@@ -560,6 +560,16 @@ async function vSettings() {
     ${'window.PublicKeyCredential' in window ? '' : '<div class="dim mt" style="font-size:13px">This browser cannot do passkeys.</div>'}
   </div>
 
+  <div class="card"><h2>Data policy & deletion</h2>
+    ${(pkc.consents || []).slice(-1).map(c => `<div class="dim mt" style="font-size:13px;border-left:3px solid var(--line);padding-left:10px"><b>On record</b> (${esc(String(c.ts).slice(0, 16))}): ${esc(c.what)}</div>`).join('')}
+    <div class="row mt"><span class="dim" style="width:220px">Keep raw events (ABC, battery, tools, check-ins)</span>
+      <input id="rtMonths" type="number" min="0" max="60" value="${sec.retention_months}" style="width:80px"> <span class="dim">months</span>
+      <button class="b" id="rtSave">Save</button></div>
+    <div class="dim mt" style="font-size:13px">0 keeps everything — it is your machine. Day summaries and the history view are unaffected; old rows are pruned on save and hourly after that.</div>
+    <div class="mt"><button class="b del" id="wipeBtn">Delete everything</button>
+      <span class="dim" style="font-size:13px"> — wipes all board data, reseeds the neutral copy, signs out every device but this one. Keeps only your login and the consent record above.</span></div>
+  </div>
+
   <div class="card"><h2>API keys</h2>
     <div class="dim">For automation — a home dashboard, a spreadsheet sync, a voice assistant. A key acts as you (its writes say so in the log), it cannot touch the kiosk, and it is shown <b>once</b> when created.</div>
     ${(sec.api_keys || []).map(k => `<div class="row" style="padding:6px 0;border-bottom:1px solid var(--line)">
@@ -614,6 +624,15 @@ async function vSettings() {
     if (!confirm(`Remove the passkey “${b.dataset.pkname}”? The password still works.`)) return;
     await api('DELETE', '/webauthn/credentials/' + b.dataset.pkrev); toast('Passkey removed'); show();
   });
+  $('#rtSave').onclick = async () => {
+    try { const out = await api('PUT', '/retention', { months: Number($('#rtMonths').value) }); toast(out.pruned ? `${out.pruned} old rows pruned` : 'Saved'); show(); } catch {}
+  };
+  $('#wipeBtn').onclick = async () => {
+    const said = prompt('This deletes every board data row and cannot be undone.\nType DELETE EVERYTHING to confirm:');
+    if (said !== 'DELETE EVERYTHING') return;
+    await api('POST', '/wipe', { confirm: said });
+    toast('Everything deleted — the board is fresh'); show();
+  };
   $('#axAdd').onclick = async () => {
     const out = await api('POST', '/api-keys', { name: $('#axName').value });
     $('#axNew').hidden = false;

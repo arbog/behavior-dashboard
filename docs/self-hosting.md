@@ -100,3 +100,20 @@ migrated automatically on boot; there are no other moving parts.
 ## Uninstall
 
 Delete the container and the `board-data` volume. That is the whole footprint.
+
+## Your data, your law
+
+When you self-host, you run the board on your own machine for your own
+family. You are the one who decides what is stored and who can see it — the
+duties about children's data (COPPA, state privacy laws) fall on operators of
+online services, and a family's personal, non-commercial instance is not one.
+The software still protects you: data stays on your machine, there is a
+retention control, and there is a delete-everything control. If you give
+anyone else (a relative, a therapist, a provider) access or copies, that
+sharing is your decision under your own obligations. We publish the tool; we
+make no claims about your use of it, and we cannot see, back up, or recover
+what you run.
+
+The board keeps a consent record — your acknowledgment, with a timestamp —
+which survives even a full wipe, because a deletion record is the one thing a
+deletion request must leave behind.
