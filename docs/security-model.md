@@ -13,8 +13,9 @@ battery, the ABC log, the patterns — sits behind a credential:
 | `/healthz` | none | Liveness + SQLite probe only. No board data. |
 | `/` , `/admin` | none | Static UI shells. |
 | `/api/today`, `/api/today/*` | **kiosk code** | Header `x-kiosk-token` for everything; `?token=` query is honoured **only** on the initial `GET /api/today` (the deep-link affordance) so taps never put the credential in a URL that proxy logs can record. Read *and* write (the taps). |
-| `/api/admin/me` | none (state probe) | Answers `200 {setup:true}` on a fresh install, `401` otherwise — it leaks nothing else. |
-| `/api/admin/login`, `/api/admin/setup` | password | Login is rate-limited; setup is a one-shot. |
+| `/api/admin/me` | none (state probe) | Answers `200 {setup:true, setup_token:true}` on a fresh install, `401` otherwise — it leaks nothing else. |
+| `/api/admin/login` | password | Rate-limited, with the 15-minute lockout after five failures. |
+| `/api/admin/setup` | **setup token** + password | The token closes the first-writer-wins race: a fresh board cannot be claimed by whoever finds the URL first. Issued once at boot (printed to the log, or supplied via `SETUP_TOKEN` for headless deploys), compared as SHA-256 in constant time, deleted on success. |
 | `/api/admin/*` (all the rest) | **admin session cookie** | Includes reading/rotating the kiosk code and changing the password. |
 
 ### Kiosk code

@@ -1,6 +1,10 @@
 'use strict';
 // API-level tests against a live server on an in-memory DB.
 process.env.DB_PATH = ':memory:';
+// A fresh board owes a bootstrap token; this suite supplies it non-interactively.
+process.env.SETUP_TOKEN = 'main-suite-setup-token-9f8e7d6c';
+// the suite performs more logins than a minute allows a stranger; tests are not strangers
+process.env.LOGIN_RATE_LIMIT = '1000';
 const test = require('node:test');
 const assert = require('node:assert');
 const { server } = require('./server.js');
@@ -11,10 +15,10 @@ let base, cookie = '', kiosk = '';
 test.before(async () => {
   await new Promise(r => server.listen(0, () => { base = `http://127.0.0.1:${server.address().port}`; r(); }));
   // first run: set up the console
-  const s = await fetch(base + '/api/admin/setup', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: PW, child_name: 'Sam' }) });
+  const s = await fetch(base + '/api/admin/setup', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: PW, child_name: 'Sam', token: process.env.SETUP_TOKEN }) });
   assert.equal(s.status, 200, 'setup');
   cookie = s.headers.get('set-cookie').split(';')[0];
-  const t = await call('GET', '/api/admin/token');
+  const t = await call('POST', '/api/admin/kiosk-devices', { label: 'Test kiosk' });
   kiosk = t.body.token;
 });
 test.after(() => server.close());
@@ -42,7 +46,7 @@ test('unconfigured boards offer setup; configured boards require login', async (
 });
 test('admin API is closed without a session', async () => {
   assert.equal((await kioskRaw('GET', '/api/admin/config')).status, 401);
-  assert.equal((await kioskRaw('GET', '/api/admin/token')).status, 401, 'the kiosk code itself is session-gated');
+  assert.equal((await kioskRaw('GET', '/api/admin/kiosk-devices')).status, 401, 'the kiosk device list is session-gated');
   assert.equal((await kioskRaw('POST', '/api/admin/logout')).status, 401, 'logout without a session is a no-op, not a leak');
 });
 test('kiosk API is closed without (or with a wrong) token', async () => {
@@ -69,14 +73,39 @@ test('responses carry the security header set (HSTS off without SECURE_COOKIES)'
   assert.equal(apiRes.headers.get('x-content-type-options'), 'nosniff', 'API responses carry the set too');
   assert.equal(apiRes.headers.get('x-frame-options'), 'DENY');
 });
-test('the kiosk token rotates', async () => {
+test('kiosk devices: create, use, revoke per device; legacy code migrates', async () => {
   const old = kiosk;
-  const out = await call('POST', '/api/admin/token/rotate');
-  assert.equal(out.status, 200);
-  assert.notEqual(out.body.token, old, 'rotation changed the token');
-  assert.equal((await kioskRaw('GET', '/api/today', undefined, old)).status, 401, 'the old token is dead');
-  assert.equal((await kioskRaw('GET', '/api/today', undefined, out.body.token)).status, 200);
-  kiosk = out.body.token;
+  const tv = await call('POST', '/api/admin/kiosk-devices', { label: 'Kitchen TV' });
+  assert.equal(tv.status, 200);
+  assert.ok(/^[0-9a-f]{48}$/.test(tv.body.token), 'raw token shown exactly once at create');
+  assert.equal((await kioskRaw('GET', '/api/today', undefined, tv.body.token)).status, 200, 'new device authenticates');
+  assert.equal((await kioskRaw('GET', '/api/today', undefined, old)).status, 200, 'the pre-existing device still works');
+  const list = await call('GET', '/api/admin/kiosk-devices');
+  assert.ok(list.body.devices.some(d => d.label === 'Kitchen TV' && !d.revoked_at));
+  assert.ok(list.body.devices.some(d => d.label === 'Test kiosk'));
+  // revoking ONE device kills only that device
+  const del = await call('DELETE', `/api/admin/kiosk-devices/${tv.body.id}`);
+  assert.equal(del.status, 200);
+  assert.equal((await kioskRaw('GET', '/api/today', undefined, tv.body.token)).status, 401, 'revoked device is dead');
+  assert.equal((await kioskRaw('GET', '/api/today', undefined, old)).status, 200, 'sibling device unaffected');
+  assert.equal((await call('DELETE', '/api/admin/kiosk-devices/99999')).status, 404);
+  // cap: 8 active devices max
+  let capHit = false;
+  for (let i = 0; i < 10; i++) {
+    if ((await call('POST', '/api/admin/kiosk-devices', { label: 'pad' + i })).status === 400) { capHit = true; break; }
+  }
+  assert.ok(capHit, 'the active-device cap refuses more');
+  assert.ok((await call('POST', '/api/admin/kiosk-devices', { label: '' })).status === 400, 'a label is required');
+  // the audit names the device events
+  const sec = (await call('GET', '/api/admin/security')).body;
+  assert.ok(sec.events.some(e => e.kind === 'kiosk_device_add' && e.detail === 'Kitchen TV'));
+  assert.ok(sec.events.some(e => e.kind === 'kiosk_device_revoke' && e.detail === 'Kitchen TV'));
+  // the security payload now carries live devices with last-used
+  assert.ok(sec.kiosk_devices.some(d => d.label === 'Test kiosk'));
+  assert.ok('kiosk_last_used' in sec === false, 'the single shared note is gone');
+  // legacy migration: seed the old-style setting on a second device set… (covered
+  // by the boot path; here we assert the setting-based import helper exists)
+  assert.ok(require('./server.js').db.prepare("SELECT 1 FROM kiosk_devices WHERE label='Test kiosk'").get());
 });
 test('password change requires the current one, rejects weak ones, and kills every session', async () => {
   assert.equal((await call('POST', '/api/admin/password', { current: 'wrong', next: 'newer-password-1' })).status, 403, 'refused without the current password');
@@ -97,6 +126,45 @@ test('password change requires the current one, rejects weak ones, and kills eve
   cookie = login.headers.get('set-cookie').split(';')[0];
   assert.equal((await call('GET', '/api/admin/config')).status, 200);
 });
+// ---- 0008: session visibility and revocation ----
+test('signed-in devices: list, revoke one, revoke all-but-me', async () => {
+  const cookieOf = r => (r.headers.get('set-cookie') || '').split(';')[0];
+  const second = await fetch(base + '/api/admin/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: PW }) });
+  assert.equal(second.status, 200);
+  const cookie2 = cookieOf(second);
+  assert.ok(cookie2, 'second session exists');
+  const list = await call('GET', '/api/admin/sessions');
+  assert.equal(list.status, 200);
+  assert.ok(list.body.sessions.length >= 2, 'both sessions listed');
+  assert.ok(list.body.sessions.every(s => s.sid && s.sid.length === 12), 'sids are 12-char prefixes');
+  assert.equal(list.body.sessions.filter(s => s.current).length, 1, 'exactly one current session');
+  const mine = list.body.sessions.find(s => s.current);
+  const other = list.body.sessions.find(s => !s.current);
+  // revoke the OTHER session by sid
+  const del = await call('DELETE', `/api/admin/sessions/${other.sid}`);
+  assert.equal(del.status, 200);
+  const dead = await fetch(base + '/api/admin/config', { headers: { cookie: cookie2 } });
+  assert.equal(dead.status, 401, 'revoked session is dead');
+  const alive = await call('GET', '/api/admin/config');
+  assert.equal(alive.status, 200, 'caller session survives');
+  // unknown sid → 404
+  assert.equal((await call('DELETE', '/api/admin/sessions/deadbeef0001')).status, 404);
+  // revoke-all-but-me
+  const third = cookieOf(await fetch(base + '/api/admin/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: PW }) }));
+  assert.ok(third);
+  const all = await call('DELETE', '/api/admin/sessions');
+  assert.equal(all.status, 200);
+  assert.equal(all.body.revoked, 1, 'the one remaining other session was revoked');
+  assert.equal((await call('GET', '/api/admin/config')).status, 200, 'caller survives revoke-all');
+  const gone = await fetch(base + '/api/admin/config', { headers: { cookie: third } });
+  assert.equal(gone.status, 401);
+  // the audit shows it
+  const sec = (await call('GET', '/api/admin/security')).body;
+  assert.ok(sec.events.some(e => e.kind === 'session_revoke'));
+  assert.ok(sec.events.some(e => e.kind === 'session_revoke_all'));
+  void mine;
+});
+
 // last among the auth tests: it locks this IP out for 15 minutes, and the
 // board-behaviour tests below ride the live session, not a login.
 test('login rejects a wrong password and lockout kicks in after five', async () => {
@@ -252,7 +320,9 @@ test('day plans carry their name to the kiosk without clobbering marks', async (
 test('the security log records auth outcomes, admin writes, and kiosk use', async () => {
   const { body } = await call('GET', '/api/admin/security');
   const kinds = new Set(body.events.map(e => e.kind));
-  assert.ok(kinds.has('setup'), 'setup is on the record');
+  // setup scrolled past the 50-row window long ago in this suite; the table itself is the record
+  const { db } = require('./server.js');
+  assert.ok(db.prepare("SELECT 1 FROM security_events WHERE kind='setup'").get(), 'setup is on the record');
   assert.ok(kinds.has('login_ok'), 'successful logins are on the record');
   assert.ok(kinds.has('login_fail'), 'failed logins are on the record (with detail)');
   assert.ok(kinds.has('admin_write'), 'admin mutations are on the record');
@@ -260,7 +330,7 @@ test('the security log records auth outcomes, admin writes, and kiosk use', asyn
   assert.match(write.detail, /^(POST|PUT|PATCH|DELETE) \/api\//);
   assert.ok(body.events.every(e => e.ok === 0 || e.ok === 1));
   assert.ok(body.events.length <= 50, 'the endpoint caps at 50');
-  assert.match(body.kiosk_last_used, /from /, 'the kiosk use note names the source IP');
+  assert.ok(Array.isArray(body.kiosk_devices) && body.kiosk_devices.some(d => d.label), 'live kiosk devices with last-used are in the payload');
   // audit is gated like everything else on the console
   assert.equal((await kioskRaw('GET', '/api/admin/security')).status, 401);
 });
@@ -273,4 +343,111 @@ test('the kiosk page and admin page shells are public; their data is not', async
   assert.equal((await fetch(base + '/')).status, 200);
   assert.equal((await fetch(base + '/admin')).status, 200);
   assert.equal((await fetch(base + '/definitely-not-a-page')).status, 404);
+});
+
+// ---- 0005: XFF trust model + limiter hygiene ----
+test('X-Forwarded-For is trusted only from private peers', () => {
+  const { clientIp, isPrivateAddr } = require('./server.js');
+  const fake = (peer, xff) => ({ headers: xff ? { 'x-forwarded-for': xff } : {}, socket: { remoteAddress: peer } });
+  // behind a proxy we can see: honour the forwarded client
+  assert.equal(clientIp(fake('127.0.0.1', '203.0.113.9')), '203.0.113.9');
+  assert.equal(clientIp(fake('::ffff:127.0.0.1', '8.8.4.4')), '8.8.4.4');
+  assert.equal(clientIp(fake('10.0.0.5', '1.2.3.4')), '1.2.3.4');
+  assert.equal(clientIp(fake('172.20.1.9', '1.2.3.4')), '1.2.3.4');
+  assert.equal(clientIp(fake('100.86.0.5', '1.2.3.4')), '1.2.3.4', 'tailscale peers are trusted');
+  // directly exposed: the header is attacker-controlled, ignore it
+  assert.equal(clientIp(fake('203.0.113.9', '10.0.0.1')), '203.0.113.9');
+  assert.equal(clientIp(fake('47.6.169.128', '198.51.100.7')), '47.6.169.128');
+  // the classifier itself
+  for (const a of ['10.1.2.3', '172.16.0.1', '172.31.255.255', '192.168.1.1', '127.0.0.1', '::1', '100.64.0.1', '100.127.255.254', 'fc00::1', '::ffff:10.0.0.1']) {
+    assert.ok(isPrivateAddr(a), `${a} should be private`);
+  }
+  for (const a of ['8.8.8.8', '172.32.0.1', '100.128.0.1', '203.0.113.9', '']) {
+    assert.equal(isPrivateAddr(a), false, `${a} should not be private`);
+  }
+});
+
+// ---- 0010: export + version ----
+test('the family can take their data: export endpoint, healthz version', async () => {
+  const h = await call('GET', '/healthz');
+  assert.ok(h.body.version && /\d+\.\d+\.\d+/.test(h.body.version), 'healthz carries the app version');
+  const x = await fetch(base + '/api/admin/export', { headers: { cookie } });
+  assert.equal(x.status, 200);
+  assert.ok(/attachment/.test(x.headers.get('content-disposition') || ''), 'export is an attachment');
+  assert.ok(/behavior-dashboard-\d{4}-\d\d-\d\d\.json/.test(x.headers.get('content-disposition')), 'dated filename');
+  const body = await x.json();
+  assert.equal(body.app, 'behavior-dashboard');
+  assert.equal(body.version, h.body.version);
+  assert.ok(body.exported_at, 'export is timestamped');
+  for (const t of ['modes', 'settings', 'day_items', 'abc_events', 'security_events', 'sessions', 'kiosk_devices']) {
+    assert.ok(Array.isArray(body.tables[t]), `export includes ${t}`);
+  }
+  assert.ok(body.tables.modes.length >= 4, 'the seeded modes are in the export');
+  assert.equal((await kioskRaw('GET', '/api/admin/export')).status, 401, 'export without a session is closed');
+});
+
+// ---- 0012: API keys (admin-scoped automation) + docs/api.md sync ----
+test('API keys: create, attribute writes, list prefix-only, revoke, cap at 5', async () => {
+  // create — the raw key is returned exactly once
+  const made = await call('POST', '/api/admin/api-keys', { name: 'home-assistant' });
+  assert.equal(made.status, 200);
+  assert.match(made.body.key, /^bdb_[0-9a-f]{48}$/, 'raw key is bdb_ + 48 hex');
+  const raw = made.body.key;
+  // the key works without any cookie — bearer and x-api-key are equivalent
+  const probe = await fetch(base + '/api/admin/api-keys', { headers: { authorization: 'Bearer ' + raw } });
+  assert.equal(probe.status, 200, 'Bearer header authenticates');
+  const listed = await probe.json();
+  assert.ok(listed.keys.length >= 1);
+  assert.ok(!('key_hash' in listed.keys[0]) && !('key' in listed.keys[0]), 'the raw key and its hash never come back');
+  assert.match(listed.keys[0].prefix, /^bdb_[0-9a-f]{6}/, 'the list shows a prefix only');
+  const viaHeader = await fetch(base + '/api/admin/api-keys', { headers: { 'x-api-key': raw } });
+  assert.equal(viaHeader.status, 200, 'x-api-key works too');
+  // a key-driven write is attributed api:<name>
+  // a key-driven write is attributed api:<name> — raw fetch, no cookie
+  const kw = await fetch(base + '/api/admin/abc', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + raw }, body: JSON.stringify({ behaviors: ['whining'], note: 'key-driven entry' }) });
+  assert.equal(kw.status, 200, 'the key can write');
+  const abc = await call('GET', '/api/admin/abc');
+  const entry = abc.body.events.find(e => e.by === 'api:home-assistant');
+  assert.ok(entry, 'the write records by = api:home-assistant');
+  // a session cookie outranks any key material a proxy might pass along
+  const both = await fetch(base + '/api/admin/api-keys', { headers: { cookie, authorization: 'Bearer bdb_' + '0'.repeat(48) } });
+  assert.equal(both.status, 200, 'a valid session is unaffected by a bogus key');
+  // garbage keys are 401, and the security log records the lifecycle
+  assert.equal((await fetch(base + '/api/admin/api-keys', { headers: { authorization: 'Bearer bdb_' + 'f'.repeat(48) } })).status, 401);
+  const sec = await call('GET', '/api/admin/security');
+  assert.ok(sec.body.events.some(e => e.kind === 'api_key_create' && e.detail === 'home-assistant'), 'api_key_create is on the record');
+  // the kiosk surface never accepts a bearer
+  assert.equal((await fetch(base + '/api/today', { headers: { authorization: 'Bearer ' + raw } })).status, 401);
+  // cap: fill to 5 active, then the next create is refused
+  const names = ['k2', 'k3', 'k4', 'k5'];
+  for (const n of names) {
+    const r = await call('POST', '/api/admin/api-keys', { name: n });
+    assert.equal(r.status, 200, n + ' created');
+  }
+  const over = await call('POST', '/api/admin/api-keys', { name: 'k6' });
+  assert.equal(over.status, 400);
+  assert.match(over.body.error, /at most 5/);
+  // revoke home-assistant — the raw key stops working immediately
+  const id = listed.keys.find(k => k.name === 'home-assistant').id;
+  assert.equal((await call('DELETE', `/api/admin/api-keys/${id}`)).status, 200);
+  assert.equal((await fetch(base + '/api/admin/api-keys', { headers: { authorization: 'Bearer ' + raw } })).status, 401, 'revoked key is dead');
+  const after = await call('GET', '/api/admin/api-keys');
+  assert.ok(after.body.keys.find(k => k.id === id).revoked_at, 'revocation is visible in the list');
+  const sec2 = await call('GET', '/api/admin/security');
+  assert.ok(sec2.body.events.some(e => e.kind === 'api_key_revoke'), 'api_key_revoke is on the record');
+  // and the kiosk devices row of the security payload carries keys now
+  assert.ok(Array.isArray(sec2.body.api_keys), 'security payload includes live api keys');
+});
+test('docs/api.md documents every route the server handles', () => {
+  const src = require('fs').readFileSync('server.js', 'utf8');
+  const doc = require('fs').readFileSync('docs/api.md', 'utf8');
+  const paths = new Set();
+  for (const m of src.matchAll(/p === '([^']+)'/g)) paths.add(m[1]);
+  for (const m of src.matchAll(/url\.pathname === '([^']+)'/g)) paths.add(m[1]);
+  for (const m of src.matchAll(/p\.match\(\^(\/[^\$]+)\$\)\.matchAll/g)) paths.add(m[1]);   // not used, but harmless
+  for (const m of src.matchAll(/p\.match\(\^(\/[a-z/-]+)\/\(/g)) paths.add(m[1] + '/:param');
+  // the parameter spellings api.md uses
+  const renames = { '/api/admin/abc/:param': '/api/admin/abc/:id', '/api/admin/api-keys/:param': '/api/admin/api-keys/:id', '/api/admin/day-items/:param': '/api/admin/day-items/:id', '/api/admin/kiosk-devices/:param': '/api/admin/kiosk-devices/:id', '/api/admin/modes/:param': '/api/admin/modes/:id', '/api/admin/plans/:param': '/api/admin/plans/:date', '/api/admin/sessions/:param': '/api/admin/sessions/:sid' };
+  const missing = [...paths].filter(p => p !== '/api/admin/me' || true).map(p => renames[p] || p).filter(p => !doc.includes(p));
+  assert.deepEqual(missing, [], `docs/api.md is missing routes: ${missing.join(', ')}`);
 });

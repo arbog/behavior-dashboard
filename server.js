@@ -32,10 +32,32 @@ const PUBLIC_DIR = process.env.PUBLIC_DIR || path.join(__dirname, 'public');
 // Leave it unset for plain-HTTP LAN deploys, where a Secure cookie would
 // break the console.
 const SECURE = process.env.SECURE_COOKIES === '1';
+// Shown in /healthz and stamped on exports so a family always knows which
+// build produced (or can read back) their data. The Docker image copies
+// package.json for exactly this.
+const VERSION = (() => { try { return require('./package.json').version || 'unknown'; } catch { return 'unknown'; } })();
 
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+
+// The data directory is a child's behavioral record. A permissive umask on a
+// bare-Node start would leave it world-readable. Tighten it at boot, best-effort:
+// a filesystem that refuses the chmod (or a platform where it is meaningless)
+// must warn, not fail to boot.
+function secureDataFiles() {
+  if (DB_PATH === ':memory:') return;
+  const tryChmod = (p, mode) => {
+    try { if (fs.existsSync(p)) fs.chmodSync(p, mode); }
+    catch (e) { console.warn(`could not set ${mode.toString(8)} on ${p}: ${e.message}`); }
+  };
+  tryChmod(path.dirname(DB_PATH), 0o700);
+  for (const p of [DB_PATH, `${DB_PATH}-wal`, `${DB_PATH}-shm`]) tryChmod(p, 0o600);
+}
+secureDataFiles();
+
 const db = new DatabaseSync(DB_PATH);
 db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;');
+// Re-run after opening: SQLite may have created -wal/-shm on this call.
+secureDataFiles();
 db.exec(`
 CREATE TABLE IF NOT EXISTS modes (
   id INTEGER PRIMARY KEY, name TEXT NOT NULL, emoji TEXT DEFAULT '', color TEXT DEFAULT '#4f8cff',
@@ -69,10 +91,17 @@ CREATE TABLE IF NOT EXISTS day_plans (
   date TEXT PRIMARY KEY, mode_id INTEGER REFERENCES modes(id) ON DELETE SET NULL,
   kind TEXT DEFAULT 'plan', label TEXT DEFAULT '', note TEXT DEFAULT '', by TEXT DEFAULT '');
 CREATE TABLE IF NOT EXISTS sessions (
-  token_hash TEXT PRIMARY KEY, expires_at TEXT NOT NULL, created_at TEXT NOT NULL);
+  token_hash TEXT PRIMARY KEY, expires_at TEXT NOT NULL, created_at TEXT NOT NULL,
+  last_seen TEXT DEFAULT '');
 CREATE TABLE IF NOT EXISTS security_events (
   id INTEGER PRIMARY KEY, ts TEXT NOT NULL, kind TEXT NOT NULL,
   ip TEXT DEFAULT '', detail TEXT DEFAULT '', ok INTEGER NOT NULL DEFAULT 1);
+CREATE TABLE IF NOT EXISTS kiosk_devices (
+  id INTEGER PRIMARY KEY, label TEXT NOT NULL, token_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL, last_used_at TEXT DEFAULT '', revoked_at TEXT);
+CREATE TABLE IF NOT EXISTS api_keys (
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL, key_hash TEXT NOT NULL, prefix TEXT NOT NULL,
+  created_at TEXT NOT NULL, last_used_at TEXT DEFAULT '', revoked_at TEXT);
 `);
 
 // Bounded audit trail: what happened to the board's keys and who touched it.
@@ -95,6 +124,7 @@ addColumn('day_items', 'rule_id INTEGER');
 addColumn('days', "plan_label TEXT DEFAULT ''");
 addColumn('days', "plan_note TEXT DEFAULT ''");
 addColumn('days', "plan_kind TEXT DEFAULT ''");
+addColumn('sessions', "last_seen TEXT DEFAULT ''");
 
 // ---------- defaults (neutral starting points; all editable in /admin) ----------
 const BATTERY_LINES = 5;
@@ -497,50 +527,107 @@ const WEAK_PASSWORDS = new Set([
   'hello', 'hello123', 'charlie', 'maggie', 'ginger', 'summer', 'winter', 'spring', 'autumn',
 ]);
 const weakPassword = pw => { const p = String(pw || '').trim().toLowerCase(); return p.length < 8 || WEAK_PASSWORDS.has(p); };
+const SESSION_SEEN = new Map();   // token_hash -> ts of last throttled last_seen write
 function sessionUser(req) {
   const t = parseCookies(req).bd_session;
   if (!t) return null;
-  const row = db.prepare('SELECT * FROM sessions WHERE token_hash=?').get(sha256(t));
+  const hash = sha256(t);
+  const row = db.prepare('SELECT * FROM sessions WHERE token_hash=?').get(hash);
   if (!row) return null;
   if (parseTs(row.expires_at) <= new Date()) { db.prepare('DELETE FROM sessions WHERE token_hash=?').run(row.token_hash); return null; }
+  // Throttled liveness: "signed-in devices" is only useful if last_seen is
+  // fresh, but a write per request would churn the WAL for every poll.
+  const now = Date.now();
+  if (now - (SESSION_SEEN.get(hash) || 0) > 60000) {
+    SESSION_SEEN.set(hash, now);
+    try { db.prepare('UPDATE sessions SET last_seen=? WHERE token_hash=?').run(tsNow(), hash); } catch {}
+  }
   return 'admin';
 }
 function adminAuthed(req) { return !!sessionUser(req); }
+
+// API keys: admin-scoped automation credentials (Authorization: Bearer bdb_…
+// or x-api-key:). They never touch the kiosk surface. Resolved only when no
+// session cookie is valid — a logged-in browser is unaffected by them.
+const API_KEYS_MAX = 5;
+const apiKeySeen = new Map();   // id -> ts of last throttled last_used write
+function resolveApiKey(req) {
+  const raw = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim()
+    || String(req.headers['x-api-key'] || '').trim();
+  if (!raw.startsWith('bdb_')) return null;
+  const got = Buffer.from(sha256(raw), 'hex');
+  for (const k of db.prepare('SELECT id, name, key_hash FROM api_keys WHERE revoked_at IS NULL').all()) {
+    const stored = Buffer.from(k.key_hash, 'hex');
+    if (stored.length === got.length && crypto.timingSafeEqual(stored, got)) {
+      const now = Date.now();
+      if (now - (apiKeySeen.get(k.id) || 0) > 60000) {
+        apiKeySeen.set(k.id, now);
+        try { db.prepare('UPDATE api_keys SET last_used_at=? WHERE id=?').run(tsNow(), k.id); } catch {}
+      }
+      return { id: k.id, name: k.name };
+    }
+  }
+  return null;
+}
 function kioskAuthed(req, url) {
-  const t = getSetting('kiosk_token');
-  if (!t) return false;
   // The header is always accepted. The query string is only accepted for the
   // kiosk's initial GET /api/today — the deep-link affordance, and the one
   // place the code may appear in a URL (and therefore in proxy logs). Every
   // write must carry the header, so taps never log the credential.
   const presented = String(req.headers['x-kiosk-token'] ||
     (req.method === 'GET' && url.pathname === '/api/today' ? url.searchParams.get('token') : null) || '').trim();
-  if (!presented || presented.length !== t.length) return false;
-  try { return crypto.timingSafeEqual(Buffer.from(presented), Buffer.from(t)); } catch { return false; }
+  if (!presented) return false;
+  const got = Buffer.from(sha256(presented), 'hex');
+  // Compare against every live device's stored hash. Timing-safe per row; a
+  // household has single-digit devices, so the row count is not a timing leak.
+  for (const d of db.prepare('SELECT id, token_hash FROM kiosk_devices WHERE revoked_at IS NULL').all()) {
+    const stored = Buffer.from(d.token_hash, 'hex');
+    if (stored.length === got.length && crypto.timingSafeEqual(stored, got)) {
+      noteKioskUse(d.id);
+      return true;
+    }
+  }
+  return false;
 }
 
-// Who/when last used the kiosk code: the console shows it so a parent sees the
-// TV talking to the board. Throttled to one note a minute — the kiosk polls
-// every 8 seconds and the settings table is not a traffic log.
-let kioskSeenAt = 0;
-function noteKioskUse(ip) {
+// Per-device "last used": the console shows the TV/iPad talking to the board,
+// and per-device is how a parent spots an unknown one. Throttled to one write
+// per 60s per device — the kiosk polls every 8 seconds.
+const kioskSeen = new Map();   // device id -> ts of last throttled write
+function noteKioskUse(deviceId, ip = '') {
   const now = Date.now();
-  // After a rotation (or a fresh install) the first use is noted immediately:
-  // "who has the new code" is the exact question the note exists to answer.
-  if (getSetting('kiosk_last_used') && now - kioskSeenAt < 60000) return;
-  kioskSeenAt = now;
-  setSetting('kiosk_last_used', `${tsNow()} from ${ip}`);
+  if (now - (kioskSeen.get(deviceId) || 0) < 60000) return;
+  kioskSeen.set(deviceId, now);
+  try { db.prepare('UPDATE kiosk_devices SET last_used_at=? WHERE id=?').run(tsNow(), deviceId); } catch {}
+}
+const KIOSK_DEVICES_MAX = 8;
+function newKioskDevice(label) {
+  const token = crypto.randomBytes(24).toString('hex');
+  const id = Number(db.prepare('INSERT INTO kiosk_devices(label,token_hash,created_at,last_used_at) VALUES(?,?,?,?)')
+    .run(clampStr(label, 40) || 'Kiosk', sha256(token), tsNow(), '').lastInsertRowid);
+  return { id, token };
 }
 
 // In-memory sliding-window rate limits (per install; the app is single-user).
 const limits = new Map();
+const LIMIT_KEYS_MAX = 4096;   // bound the map: keys are attacker-influenced IPs
 function rateLimit(key, limit, windowMs) {
   const now = Date.now();
   const arr = (limits.get(key) || []).filter(t => now - t < windowMs);
+  // An exposed board sees distinct source addresses forever; without a sweep
+  // the Map grows without bound (one small array per IP, never evicted).
+  if (limits.size > LIMIT_KEYS_MAX) sweepLimits(now);
   if (arr.length >= limit) { limits.set(key, arr); return false; }
   arr.push(now); limits.set(key, arr);
   return true;
 }
+function sweepLimits(now = Date.now()) {
+  // 60 s is the widest window any caller uses; an entry whose newest hit is
+  // older than that contributes nothing and can go.
+  for (const [k, arr] of limits) if (!arr.length || now - arr[arr.length - 1] > 60000) limits.delete(k);
+  for (const [k, l] of lockouts) if (l.until > 0 && l.until <= now) lockouts.delete(k);
+}
+const LOGIN_RATE_LIMIT = Math.max(1, Number(process.env.LOGIN_RATE_LIMIT) || 10);
 const lockouts = new Map();   // key -> { n, until }
 function loginAllowed(ip) {
   const l = lockouts.get(ip);
@@ -556,9 +643,33 @@ function loginFailed(ip) {
   if (l.n >= 5) { l.until = Date.now() + 15 * 60000; l.n = 0; }
   lockouts.set(ip, l);
 }
+// Trust X-Forwarded-For only when the direct peer is private/loopback — i.e.
+// when the app is behind a proxy it can actually see (LAN reverse proxy, PaaS
+// sidecar, Tailscale). A directly-exposed board must ignore a client-supplied
+// header, or the per-IP limits become trivially evadable by rotating it.
+function isPrivateAddr(a) {
+  if (!a) return false;
+  const s = String(a).toLowerCase().replace(/^::ffff:/, '');
+  if (s === '::1' || s === '127.0.0.1' || s.startsWith('127.')) return true;
+  if (s.startsWith('10.') || s.startsWith('192.168.')) return true;
+  if (s.startsWith('100.')) {                      // 100.64.0.0/10 (Tailscale)
+    const o2 = Number(s.split('.')[1]);
+    if (o2 >= 64 && o2 <= 127) return true;
+  }
+  if (s.startsWith('172.')) {                      // 172.16.0.0/12
+    const o2 = Number(s.split('.')[1]);
+    if (o2 >= 16 && o2 <= 31) return true;
+  }
+  if (s.startsWith('fc') || s.startsWith('fd')) return true;   // fc00::/7
+  return false;
+}
 function clientIp(req) {
-  const xf = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
-  return xf || req.socket.remoteAddress || 'unknown';
+  const peer = req.socket?.remoteAddress || '';
+  if (isPrivateAddr(peer)) {
+    const xf = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+    if (xf) return xf;
+  }
+  return peer || 'unknown';
 }
 
 // ---------- kiosk API (token-gated) ----------
@@ -748,10 +859,15 @@ function admin(req, res, url, body, user) {
   // ---------- auth / setup ----------
   if (M === 'GET' && p === '/api/admin/me') {
     if (adminAuthed(req)) return json(res, 200, { user: 'admin', setup: false, child_name: childName() });
-    return json(res, getSetting('admin_hash') ? 401 : 200, { setup: !getSetting('admin_hash') });
+    const configured = !!getSetting('admin_hash');
+    return json(res, configured ? 401 : 200, {
+      setup: !configured,
+      // Presence only — the value never leaves the server log / operator env.
+      setup_token: !configured && !!getSetting('setup_token_hash'),
+    });
   }
   if (M === 'POST' && p === '/api/admin/login') {
-    if (!rateLimit('login:' + ip, 10, 60000)) { logEvent('login_fail', ip, 'rate limited'); return json(res, 429, { error: 'too many attempts' }); }
+    if (!rateLimit('login:' + ip, LOGIN_RATE_LIMIT, 60000)) { logEvent('login_fail', ip, 'rate limited'); return json(res, 429, { error: 'too many attempts' }); }
     const lo = loginAllowed(ip);
     if (!lo.ok) { logEvent('login_fail', ip, 'locked'); return json(res, 423, { error: `locked; try again in ${Math.ceil((lo.until - Date.now()) / 60000)} min` }); }
     if (!getSetting('admin_hash')) {
@@ -773,9 +889,20 @@ function admin(req, res, url, body, user) {
   if (M === 'POST' && p === '/api/admin/setup') {
     if (getSetting('admin_hash')) return json(res, 409, { error: 'already configured' });
     if (!rateLimit('setup:' + ip, 10, 60000)) return json(res, 429, { error: 'too many attempts' });
+    // The bootstrap token makes setup unforgeable. Compare SHA-256s in constant
+    // time; the scrypt call on failure keeps the response time flat so a
+    // missing-vs-wrong token is not distinguishable.
+    const wantHash = getSetting('setup_token_hash');
+    const got = crypto.createHash('sha256').update(String(body.token || '')).digest();
+    if (!wantHash || !crypto.timingSafeEqual(got, Buffer.from(wantHash, 'hex'))) {
+      crypto.scryptSync('timing-equalizer', 'timing-equalizer', 64);
+      logEvent('setup_fail', ip, 'bad setup token', false);
+      return json(res, 403, { error: 'setup token required or wrong' });
+    }
     const pw = String(body.password || '');
     if (weakPassword(pw)) return json(res, 400, { error: 'password is too common or too short — use 8+ characters that are not a dictionary word' });
     setSetting('admin_hash', hashPassword(pw));
+    setSetting('setup_token_hash', null);   // single use
     if (body.child_name != null) setSetting('child_name', clampStr(body.child_name, 40));
     logEvent('setup', ip);
     return json(res, 200, { ok: true }, { 'set-cookie': newSession() });
@@ -783,7 +910,15 @@ function admin(req, res, url, body, user) {
   // Everything below requires an admin session — including the password
   // endpoints: changing the password, reading or rotating the kiosk token, and
   // every board-copy editor is session-gated on purpose.
-  if (!adminAuthed(req)) return json(res, 401, { error: 'admin login required' });
+  // An API key is the automation path to the same gate: it authenticates as
+  // 'api:<name>' (the audit's by field), and it never bypasses the limits.
+  let identity = 'admin';
+  if (!adminAuthed(req)) {
+    const key = resolveApiKey(req);
+    if (!key) return json(res, 401, { error: 'admin login required' });
+    identity = `api:${key.name}`;
+  }
+  user = identity;   // board writes record by 'api:<name>' for key-driven calls
   if (!rateLimit('admin:' + ip, 300, 60000)) { logEvent('admin_rate_limited', ip, p); return json(res, 429, { error: 'too many requests' }); }
   // The audit trail of the board itself: every authenticated mutation, where
   // it came from. (Reads are noise; writes are the record.)
@@ -806,18 +941,96 @@ function admin(req, res, url, body, user) {
     logEvent('password_change', ip);
     return json(res, 200, { ok: true });
   }
-  if (M === 'GET' && p === '/api/admin/token') return json(res, 200, { token: getSetting('kiosk_token') });
-  if (M === 'POST' && p === '/api/admin/token/rotate') {
-    setSetting('kiosk_token', crypto.randomBytes(24).toString('hex'));
-    setSetting('kiosk_last_used', null);
-    logEvent('token_rotate', ip);
-    return json(res, 200, { token: getSetting('kiosk_token') });
+  if (M === 'GET' && p === '/api/admin/kiosk-devices') {
+    const devices = db.prepare('SELECT id,label,created_at,last_used_at,revoked_at FROM kiosk_devices ORDER BY id').all();
+    return json(res, 200, { devices });
+  }
+  if (M === 'POST' && p === '/api/admin/kiosk-devices') {
+    const label = clampStr(body.label, 40).trim();
+    if (!label) return json(res, 400, { error: 'a device label is required' });
+    if (db.prepare('SELECT COUNT(*) c FROM kiosk_devices WHERE revoked_at IS NULL').get().c >= KIOSK_DEVICES_MAX) {
+      return json(res, 400, { error: `keep at most ${KIOSK_DEVICES_MAX} active devices — revoke one first` });
+    }
+    const { id, token } = newKioskDevice(label);
+    logEvent('kiosk_device_add', ip, label);
+    // The raw token is shown once — this response is the only copy.
+    return json(res, 200, { id, label, token });
+  }
+  if (M === 'DELETE' && (m = p.match(/^\/api\/admin\/kiosk-devices\/(\d+)$/))) {
+    const dev = db.prepare('SELECT id,label FROM kiosk_devices WHERE id=? AND revoked_at IS NULL').get(Number(m[1]));
+    if (!dev) return json(res, 404, { error: 'no such active device' });
+    db.prepare('UPDATE kiosk_devices SET revoked_at=? WHERE id=?').run(tsNow(), dev.id);
+    logEvent('kiosk_device_revoke', ip, dev.label);
+    return json(res, 200, { ok: true, label: dev.label });
   }
   // The audit trail itself: recent security events + who last used the kiosk
   // code. This is the card that answers "was the TV the only thing on it?".
+  // API keys: create (raw shown once), list (prefix only), revoke.
+  if (M === 'POST' && p === '/api/admin/api-keys') {
+    const name = clampStr(body.name, 40).trim();
+    if (!name) return json(res, 400, { error: 'a key name is required' });
+    if (db.prepare('SELECT COUNT(*) c FROM api_keys WHERE revoked_at IS NULL').get().c >= API_KEYS_MAX) {
+      return json(res, 400, { error: `keep at most ${API_KEYS_MAX} active keys — revoke one first` });
+    }
+    const raw = 'bdb_' + crypto.randomBytes(24).toString('hex');
+    const id = Number(db.prepare('INSERT INTO api_keys(name,key_hash,prefix,created_at,last_used_at) VALUES(?,?,?,?,?)')
+      .run(name, sha256(raw), raw.slice(0, 12), tsNow(), '').lastInsertRowid);
+    logEvent('api_key_create', ip, name);
+    return json(res, 200, { id, name, key: raw });   // the raw key is shown once
+  }
+  if (M === 'GET' && p === '/api/admin/api-keys') {
+    const keys = db.prepare('SELECT id,name,prefix,created_at,last_used_at,revoked_at FROM api_keys ORDER BY id').all();
+    return json(res, 200, { keys });
+  }
+  if (M === 'DELETE' && (m = p.match(/^\/api\/admin\/api-keys\/(\d+)$/))) {
+    const key = db.prepare('SELECT id,name FROM api_keys WHERE id=? AND revoked_at IS NULL').get(Number(m[1]));
+    if (!key) return json(res, 404, { error: 'no such active key' });
+    db.prepare('UPDATE api_keys SET revoked_at=? WHERE id=?').run(tsNow(), key.id);
+    logEvent('api_key_revoke', ip, key.name);
+    return json(res, 200, { ok: true, name: key.name });
+  }
   if (M === 'GET' && p === '/api/admin/security') {
     const events = db.prepare('SELECT ts,kind,ip,detail,ok FROM security_events ORDER BY id DESC LIMIT 50').all();
-    return json(res, 200, { kiosk_last_used: getSetting('kiosk_last_used') || null, events });
+    const kiosk_devices = db.prepare('SELECT label,last_used_at FROM kiosk_devices WHERE revoked_at IS NULL ORDER BY id').all();
+    const api_keys = db.prepare('SELECT name,last_used_at FROM api_keys WHERE revoked_at IS NULL ORDER BY id').all();
+    return json(res, 200, { kiosk_devices, api_keys, events });
+  }
+  // The family's data, in one document they own. No redaction: it requires a
+  // full admin session, and it is the human-readable half of the backup story
+  // (the encrypted blob, when encryption is on, is the byte-faithful half).
+  if (M === 'GET' && p === '/api/admin/export') {
+    const tables = {};
+    for (const { name } of db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all()) {
+      if (!/^[a-z_]+$/.test(name)) continue;   // our schema only, never anything odd
+      tables[name] = db.prepare(`SELECT * FROM "${name}"`).all();
+    }
+    logEvent('export', ip);
+    res.writeHead(200, {
+      'content-type': 'application/json', 'cache-control': 'no-store', ...SEC_HEADERS,
+      'content-disposition': `attachment; filename="behavior-dashboard-${localParts().date}.json"`,
+    });
+    return res.end(JSON.stringify({ app: 'behavior-dashboard', version: VERSION, exported_at: tsNow(), tables }));
+  }
+  // Signed-in devices: visible, and killable individually. The sid is the
+  // 12-char prefix of the stored hash — enough to match a row, never enough
+  // to use one.
+  const mySessionHash = sha256(parseCookies(req).bd_session || '');
+  if (M === 'GET' && p === '/api/admin/sessions') {
+    const sessions = db.prepare('SELECT token_hash, created_at, expires_at, last_seen FROM sessions ORDER BY created_at').all()
+      .map(s => ({ sid: s.token_hash.slice(0, 12), created_at: s.created_at, expires_at: s.expires_at, last_seen: s.last_seen || null, current: s.token_hash === mySessionHash }));
+    return json(res, 200, { sessions });
+  }
+  if (M === 'DELETE' && p === '/api/admin/sessions') {
+    const gone = db.prepare('DELETE FROM sessions WHERE token_hash <> ?').run(mySessionHash);
+    logEvent('session_revoke_all', ip, `revoked ${gone.changes}`);
+    return json(res, 200, { ok: true, revoked: gone.changes });
+  }
+  if (M === 'DELETE' && (m = p.match(/^\/api\/admin\/sessions\/([0-9a-f]{12})$/))) {
+    const row = db.prepare("SELECT token_hash FROM sessions WHERE substr(token_hash,1,12)=?").get(m[1]);
+    if (!row) return json(res, 404, { error: 'no such session' });
+    db.prepare('DELETE FROM sessions WHERE token_hash=?').run(row.token_hash);
+    logEvent('session_revoke', ip, 'sid ' + m[1]);
+    return json(res, 200, { ok: true, current: row.token_hash === mySessionHash });
   }
   if (M === 'PUT' && p === '/api/admin/identity') {
     setSetting('child_name', clampStr(body.child_name, 40));
@@ -1057,7 +1270,7 @@ function admin(req, res, url, body, user) {
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
 const SEC_HEADERS = {
   'x-content-type-options': 'nosniff',
-  'content-security-policy': "default-src 'self'; style-src 'self' 'unsafe-inline'",
+  'content-security-policy': "default-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.github.com",
   'referrer-policy': 'no-referrer',
   'x-frame-options': 'DENY',
   // HSTS only when the app knows it is behind TLS (SECURE_COOKIES=1): sending
@@ -1083,7 +1296,7 @@ const server = http.createServer(async (req, res) => {
     // The probe is what says the SQLite volume still works: an app that answers
     // while its DB is locked or unreadable is not healthy.
     if (p === '/healthz') {
-      try { db.prepare('SELECT 1 AS ok').get(); return json(res, 200, { ok: true, db: true }); }
+      try { db.prepare('SELECT 1 AS ok').get(); return json(res, 200, { ok: true, db: true, version: VERSION }); }
       catch (e) { return json(res, 503, { ok: false, error: clampStr(e.message, 120) }); }
     }
     if (p.startsWith('/api/admin/')) {
@@ -1118,8 +1331,31 @@ if (process.env.ADMIN_PASSWORD && !getSetting('admin_hash')) {
   setSetting('admin_hash', hashPassword(String(process.env.ADMIN_PASSWORD)));
   console.log('admin password set from ADMIN_PASSWORD env (first run only)');
 }
+// Kiosk device migration: a pre-0009 install had one shared token in
+// settings. Import it as a named device so it keeps working, and revoke-by-
+// device works from then on. Runs once; the legacy setting is left in place
+// (harmless) but is no longer consulted by auth.
+if (!db.prepare('SELECT 1 FROM kiosk_devices LIMIT 1').get()) {
+  const legacy = getSetting('kiosk_token');
+  if (legacy) {
+    db.prepare('INSERT INTO kiosk_devices(label,token_hash,created_at,last_used_at) VALUES(?,?,?,?)')
+      .run('Original kiosk', sha256(String(legacy)), tsNow(), '');
+    console.log('migrated the shared kiosk code to device "Original kiosk"');
+  }
+}
+// Setup bootstrap token — closes the first-writer-wins race on a fresh board:
+// a stranger who finds the URL before the parent cannot claim the admin account.
+// Issued once (or supplied by the operator via SETUP_TOKEN for headless/PaaS
+// deploys), printed once, consumed by the first successful setup.
+if (!getSetting('admin_hash') && !getSetting('setup_token_hash')) {
+  const raw = process.env.SETUP_TOKEN || crypto.randomBytes(32).toString('hex');
+  setSetting('setup_token_hash', sha256(raw));
+  console.log(process.env.SETUP_TOKEN
+    ? 'setup token provided via SETUP_TOKEN env'
+    : `setup token: ${raw}`);
+}
 
 if (require.main === module) {
   server.listen(PORT, () => console.log(`behavior-dashboard listening on :${PORT} (db ${DB_PATH})`));
 }
-module.exports = { server, db, itemStatus, reward, riskFromLevels, batteryView, BATTERY_LINES, hashPassword, verifyPassword };
+module.exports = { server, db, itemStatus, reward, riskFromLevels, batteryView, BATTERY_LINES, hashPassword, verifyPassword, clientIp, isPrivateAddr };

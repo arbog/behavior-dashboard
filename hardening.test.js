@@ -3,6 +3,8 @@
 // SECURE_COOKIES is read at module load (node --test gives each file one).
 process.env.DB_PATH = ':memory:';
 process.env.SECURE_COOKIES = '1';
+// A fresh board carries a bootstrap token; this process provides it non-interactively.
+process.env.SETUP_TOKEN = 'hardening-test-setup-token-1a2b3c4d';
 const test = require('node:test');
 const assert = require('node:assert');
 const { server } = require('./server.js');
@@ -16,7 +18,7 @@ test.after(() => server.close());
 test('setup rejects a common password even when it is 8+ characters', async () => {
   const weak = await fetch(base + '/api/admin/setup', {
     method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ password: 'password123' }),
+    body: JSON.stringify({ password: 'password123', token: process.env.SETUP_TOKEN }),
   });
   assert.equal(weak.status, 400);
   assert.match((await weak.json()).error, /too common/);
@@ -29,7 +31,7 @@ test('behind TLS: HSTS is sent and the session cookie carries Secure', async () 
 
   const setup = await fetch(base + '/api/admin/setup', {
     method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ password: 'secure-tls-pass-9x' }),
+    body: JSON.stringify({ password: 'secure-tls-pass-9x', token: process.env.SETUP_TOKEN }),
   });
   assert.equal(setup.status, 200);
   const cookie = setup.headers.get('set-cookie');

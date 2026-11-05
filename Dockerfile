@@ -9,6 +9,7 @@ USER node
 WORKDIR /app
 
 COPY server.js ./
+COPY package.json ./
 COPY public ./public
 
 ENV DB_PATH=/data/board.db

@@ -86,7 +86,7 @@
 <div id="auth" hidden>
   <div class="card" id="authCard"></div>
 </div>
-<header><h1>Behavior Board — Admin</h1><span id="stat" class="dim" style="font-size:14px"></span><a href="/" target="_blank">Open kiosk ↗</a></header>
+<header><h1>Behavior Board — Admin</h1><span id="stat" class="dim" style="font-size:14px"></span><span id="ver" class="dim" style="font-size:13px"></span><a href="/" target="_blank">Open kiosk ↗</a></header>
 <nav id="nav"></nav>
 <main id="view"></main>
 <div class="toast" id="toast">Saved</div>
@@ -115,6 +115,7 @@ async function showAuth() {
   $('#authCard').innerHTML = me.setup
     ? `<h1>Welcome to the board</h1>
        <div class="dim">First run: pick a password for this console, and who the board is for.</div>
+       <div class="mt"><small class="dim">Setup token (printed in the server log at first boot, or the <code>SETUP_TOKEN</code> you deployed with)</small><input id="auToken" autocomplete="off" spellcheck="false" placeholder="64 hex characters"></div>
        <div class="mt"><small class="dim">Child's name (shown on the kiosk, in scripts)</small><input id="auName" maxlength="40" placeholder="e.g. Sam"></div>
        <div class="mt"><small class="dim">Admin password (8+ characters)</small><input id="auPw" type="password" autocomplete="new-password"></div>
        <div class="mt"><button class="b" id="auGo" style="width:100%">Create the console</button></div>
@@ -129,7 +130,7 @@ async function showAuth() {
       // the page never sees the token
       const r = await fetch(me.setup ? '/api/admin/setup' : '/api/admin/login', {
         method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(me.setup ? { password: $('#auPw').value, child_name: $('#auName').value } : { password: $('#auPw').value }),
+        body: JSON.stringify(me.setup ? { password: $('#auPw').value, child_name: $('#auName').value, token: $('#auToken').value } : { password: $('#auPw').value }),
       });
       if (!r.ok) { const e = await r.json().catch(() => ({})); alert(e.error || 'Error'); return; }
       $('#auth').hidden = true;
@@ -355,24 +356,33 @@ function vWeek() {
 
 // ---------- Settings: identity, security, battery copy, rewards, protocol ----------
 async function vSettings() {
-  const [tok, sec] = await Promise.all([api('GET', '/token'), api('GET', '/security')]);
+  const [sec, sess, kdev] = await Promise.all([api('GET', '/security'), api('GET', '/sessions'), api('GET', '/kiosk-devices')]);
   const secRow = e => `<div class="row" style="padding:6px 0;border-bottom:1px solid var(--line);gap:10px">
       <span class="dim" style="width:52px">${esc(String(e.ts).slice(5, 16))}</span>
       <span style="width:140px;font-weight:600;${e.ok ? '' : 'color:var(--bad)'}">${esc(e.kind)}${e.ok ? '' : ' ✗'}</span>
       <span class="dim grow">${esc(e.detail || '—')}</span><span class="dim" style="white-space:nowrap">${esc(e.ip)}</span></div>`;
   $('#view').innerHTML = `
+  <div class="card"><h2>Your data</h2>
+    <div class="dim">Everything this board knows, in one JSON file you own — schedules, marks, battery, check-ins, the ABC log, all of it. Take it whenever you like; it is the readable half of your backup.</div>
+    <div class="mt"><a class="b" id="dl" href="/api/admin/export" download>Download my data</a></div></div>
+
   <div class="card"><h2>Child</h2>
     <div class="row"><input id="setName" class="grow" maxlength="40" value="${esc(cfg.identity.child_name)}" placeholder="Shown on the kiosk and in scripts">
       <button class="b" id="setNameBtn">Save</button></div>
     <div class="dim mt">Leave blank for name-free wording ("Great job today!" instead of "Great job today, Sam!").</div></div>
 
-  <div class="card"><h2>Kiosk code</h2>
-    <div class="dim">The TV/iPad needs this to see the board — <code>/</code> is public, every board endpoint is not. Put it in the kiosk once and forget it.</div>
-    <div class="row mt"><code id="tok" class="grow">${esc(tok.token)}</code><button class="b sec" id="tokCopy">Copy</button></div>
-    <div class="row mt"><div class="grow"><input id="tokUrl" value="${location.origin.replace(/^http/, 'https')}?token=${esc(tok.token)}" readonly></div></div>
-    <div class="dim mt" style="font-size:13px">That URL is what you open on the kiosk (edit the host to yours; the <code>?token=</code> is saved on the device the first time). Rotating the code below signs every kiosk out at once.</div>
-    <div class="mt"><button class="b del" id="tokRotate">Rotate kiosk code</button></div>
-    <div class="dim mt" style="font-size:13px">Last used: ${sec.kiosk_last_used ? esc(sec.kiosk_last_used) : 'no kiosk has connected yet'}</div></div>
+  <div class="card"><h2>Kiosk devices</h2>
+    <div class="dim">Each TV/iPad gets its own code — revoke one without revoking the others. Put it in the kiosk once and forget it.</div>
+    ${kdev.devices.filter(d => !d.revoked_at).map(d => `<div class="row" style="padding:6px 0;border-bottom:1px solid var(--line)">
+      <span style="width:150px;font-weight:600">${esc(d.label)}</span>
+      <span class="dim grow">added ${esc(String(d.created_at).slice(0, 16))} · last used ${esc(String(d.last_used_at || '—').slice(5, 16))}</span>
+      <button class="b sec" data-revoke="${d.id}" data-label="${esc(d.label)}">Revoke</button></div>`).join('')}
+    <div class="row mt"><input id="ndLabel" class="grow" maxlength="40" placeholder="New device label — Kitchen TV, iPad">
+      <button class="b" id="ndAdd">Add device</button></div>
+    <div id="ndNew" hidden><div class="dim mt">Give this to the kiosk <b>now — it is shown once</b>:</div>
+      <div class="row mt"><code id="ndTok" class="grow"></code><button class="b sec" id="ndCopy">Copy</button></div>
+      <div class="row mt"><div class="grow"><input id="ndUrl" readonly></div></div>
+      <div class="dim mt" style="font-size:13px">Open that URL on the kiosk (edit the host to yours); the <code>?token=</code> is saved on the device the first time.</div></div></div>
 
   <div class="card"><h2>Console password</h2>
     <div class="row"><input id="pwNow" type="password" class="grow" placeholder="Current password" autocomplete="current-password">
@@ -401,18 +411,59 @@ async function vSettings() {
     <div class="mt"><small class="dim">Script without one (<code>{name}</code>)</small><textarea id="pS" rows="2">${esc(cfg.regulation.protocol.script)}</textarea></div>
     <div class="mt"><button class="b" id="pBtn2">Save protocol</button></div></div>
 
+  <div class="card"><h2>Signed-in devices</h2>
+    <div class="dim">Every console session that is still alive. Signed-out devices must sign in again.</div>
+    ${sess.sessions.map(s => `<div class="row" style="padding:6px 0;border-bottom:1px solid var(--line);gap:10px">
+      <span style="width:150px;font-weight:600">${s.current ? '<span class="tag" style="background:var(--ok);color:#06281b">this device</span>' : esc(s.sid)}</span>
+      <span class="dim grow">created ${esc(String(s.created_at).slice(0, 16))} · last seen ${esc(String(s.last_seen || s.created_at).slice(5, 16))}</span>
+      ${s.current ? '' : `<button class="b sec" data-kill="${esc(s.sid)}">Sign out</button>`}</div>`).join('') || '<div class="dim">No sessions.</div>'}
+    <div class="mt"><button class="b del" id="killAll">Sign out everything else</button></div></div>
+
+  <div class="card"><h2>API keys</h2>
+    <div class="dim">For automation — a home dashboard, a spreadsheet sync, a voice assistant. A key acts as you (its writes say so in the log), it cannot touch the kiosk, and it is shown <b>once</b> when created.</div>
+    ${(sec.api_keys || []).map(k => `<div class="row" style="padding:6px 0;border-bottom:1px solid var(--line)">
+      <span style="width:150px;font-weight:600">${esc(k.name)}</span>
+      <span class="dim grow"><code>${esc(k.prefix)}…</code> · created ${esc(String(k.created_at).slice(0, 16))} · last used ${esc(String(k.last_used_at || '—').slice(5, 16))}</span>
+      ${k.revoked_at ? '<span class="tag">revoked</span>' : `<button class="b sec" data-axrev="${k.id}" data-axname="${esc(k.name)}">Revoke</button>`}</div>`).join('') || '<div class="dim">No keys yet.</div>'}
+    <div class="row mt"><input id="axName" class="grow" maxlength="40" placeholder="Key name — home-assistant, spreadsheet">
+      <button class="b" id="axAdd">Create key</button></div>
+    <div id="axNew" hidden><div class="dim mt">Copy it <b>now — it is shown once</b>:</div>
+      <div class="row mt"><code id="axTok" class="grow"></code><button class="b sec" id="axCopy">Copy</button></div></div>
+    <div class="dim mt" style="font-size:13px">Full reference: <a href="https://github.com/arbog/behavior-dashboard/blob/main/docs/api.md" target="_blank">docs/api.md</a></div></div>
+
   <div class="card"><h2>Security log</h2>
     <div class="dim">The last 50 security events: logins (good and bad), the setup, password changes, kiosk-code rotations, and every console write with its source IP. The log keeps its most recent 500 entries on the server.</div>
     <div class="mt">${sec.events.length ? sec.events.slice(0, 20).map(secRow).join('') : '<div class="dim">Nothing yet.</div>'}</div></div>`;
   $('#setNameBtn').onclick = async () => { await api('PUT', '/identity', { child_name: $('#setName').value }); toast(); };
-  $('#tokCopy').onclick = async () => { await navigator.clipboard.writeText(tok.token); toast('Copied'); };
-  $('#tokRotate').onclick = async () => {
-    if (!confirm('Rotate the kiosk code? Every kiosk must be given the new code.')) return;
-    const out = await api('POST', '/token/rotate', {});
-    $('#tok').textContent = out.token;
-    $('#tokUrl').value = location.origin.replace(/^http/, 'https') + '?token=' + out.token;
-    toast('New code set');
+  $('#view').querySelectorAll('[data-kill]').forEach(b => b.onclick = async () => { await api('DELETE', '/sessions/' + b.dataset.kill); toast('Signed out'); show(); });
+  $('#killAll').onclick = async () => {
+    if (!confirm('Sign out every other device? They must sign in again.')) return;
+    const out = await api('DELETE', '/sessions', {}); toast(`Signed out ${out.revoked}`); show();
   };
+  $('#ndAdd').onclick = async () => {
+    const out = await api('POST', '/kiosk-devices', { label: $('#ndLabel').value });
+    $('#ndNew').hidden = false;
+    $('#ndTok').textContent = out.token;
+    $('#ndUrl').value = location.origin.replace(/^http/, 'https') + '?token=' + out.token;
+    $('#ndLabel').value = '';
+  };
+  $('#ndCopy').onclick = async () => { await navigator.clipboard.writeText($('#ndTok').textContent); toast('Copied'); };
+  $('#view').querySelectorAll('[data-revoke]').forEach(b => b.onclick = async () => {
+    if (!confirm(`Revoke “${b.dataset.label}”? That kiosk must be given a new code.`)) return;
+    await api('DELETE', '/kiosk-devices/' + b.dataset.revoke); toast('Device revoked'); show();
+  });
+  $('#axAdd').onclick = async () => {
+    const out = await api('POST', '/api-keys', { name: $('#axName').value });
+    $('#axNew').hidden = false;
+    $('#axTok').textContent = out.key;
+    $('#axName').value = '';
+  };
+  $('#axCopy').onclick = async () => { await navigator.clipboard.writeText($('#axTok').textContent); toast('Copied'); };
+  $('#view').querySelectorAll('[data-axrev]').forEach(b => b.onclick = async () => {
+    if (!confirm(`Revoke the key “${b.dataset.axname}”? Anything using it will stop working.`)) return;
+    await api('DELETE', '/api-keys/' + b.dataset.axrev); toast('Key revoked'); show();
+  });
+  $('#ndCopy').onclick = async () => { await navigator.clipboard.writeText($('#ndTok').textContent); toast('Copied'); };
   $('#pwBtn').onclick = async () => {
     try { await api('POST', '/password', { current: $('#pwNow').value, next: $('#pwNext').value }); $('#pwNow').value = $('#pwNext').value = ''; toast('Password changed'); } catch {}
   };
@@ -585,6 +636,23 @@ async function vHistory() {
   if (status === 200 && me.setup) { showAuth(); return; }
   if (status === 401) { showAuth(); return; }
   show();
+  // Version + update nudge: current version always; a newer release noted
+  // when GitHub says so. Fail silent — an offline board must not nag or error.
+  try {
+    const v = (await (await fetch('/healthz')).json()).version || '';
+    const el = document.getElementById('ver');
+    if (!el) return;
+    el.textContent = 'v' + v;
+    const r = await fetch('https://api.github.com/repos/arbog/behavior-dashboard/releases/latest', { signal: AbortSignal.timeout(3000) });
+    if (!r.ok) return;
+    const tag = String(((await r.json()) || {}).tag_name || '').replace(/^v/, '');
+    const num = s => String(s).split('.').map(x => parseInt(x, 10) || 0);
+    const a = num(v), b = num(tag);
+    const newer = b[0] > a[0] || (b[0] === a[0] && b[1] > a[1]) || (b[0] === a[0] && b[1] === a[1] && b[2] > a[2]);
+    if (tag && newer) {
+      el.innerHTML = `v${esc(v)} · <a href="https://github.com/arbog/behavior-dashboard/releases" target="_blank" style="color:var(--star)">new version available: v${esc(tag)}</a>`;
+    }
+  } catch { /* offline, rate-limited, or no releases yet: say nothing */ }
 })();
 </script>
 </body>
