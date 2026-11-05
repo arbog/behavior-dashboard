@@ -1,6 +1,8 @@
 'use strict';
 // API-level tests against a live server on an in-memory DB.
 process.env.DB_PATH = ':memory:';
+// A fresh board owes a bootstrap token; this suite supplies it non-interactively.
+process.env.SETUP_TOKEN = 'main-suite-setup-token-9f8e7d6c';
 const test = require('node:test');
 const assert = require('node:assert');
 const { server } = require('./server.js');
@@ -11,7 +13,7 @@ let base, cookie = '', kiosk = '';
 test.before(async () => {
   await new Promise(r => server.listen(0, () => { base = `http://127.0.0.1:${server.address().port}`; r(); }));
   // first run: set up the console
-  const s = await fetch(base + '/api/admin/setup', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: PW, child_name: 'Sam' }) });
+  const s = await fetch(base + '/api/admin/setup', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: PW, child_name: 'Sam', token: process.env.SETUP_TOKEN }) });
   assert.equal(s.status, 200, 'setup');
   cookie = s.headers.get('set-cookie').split(';')[0];
   const t = await call('GET', '/api/admin/token');

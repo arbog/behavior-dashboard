@@ -748,7 +748,12 @@ function admin(req, res, url, body, user) {
   // ---------- auth / setup ----------
   if (M === 'GET' && p === '/api/admin/me') {
     if (adminAuthed(req)) return json(res, 200, { user: 'admin', setup: false, child_name: childName() });
-    return json(res, getSetting('admin_hash') ? 401 : 200, { setup: !getSetting('admin_hash') });
+    const configured = !!getSetting('admin_hash');
+    return json(res, configured ? 401 : 200, {
+      setup: !configured,
+      // Presence only — the value never leaves the server log / operator env.
+      setup_token: !configured && !!getSetting('setup_token_hash'),
+    });
   }
   if (M === 'POST' && p === '/api/admin/login') {
     if (!rateLimit('login:' + ip, 10, 60000)) { logEvent('login_fail', ip, 'rate limited'); return json(res, 429, { error: 'too many attempts' }); }
@@ -773,9 +778,20 @@ function admin(req, res, url, body, user) {
   if (M === 'POST' && p === '/api/admin/setup') {
     if (getSetting('admin_hash')) return json(res, 409, { error: 'already configured' });
     if (!rateLimit('setup:' + ip, 10, 60000)) return json(res, 429, { error: 'too many attempts' });
+    // The bootstrap token makes setup unforgeable. Compare SHA-256s in constant
+    // time; the scrypt call on failure keeps the response time flat so a
+    // missing-vs-wrong token is not distinguishable.
+    const wantHash = getSetting('setup_token_hash');
+    const got = crypto.createHash('sha256').update(String(body.token || '')).digest();
+    if (!wantHash || !crypto.timingSafeEqual(got, Buffer.from(wantHash, 'hex'))) {
+      crypto.scryptSync('timing-equalizer', 'timing-equalizer', 64);
+      logEvent('setup_fail', ip, 'bad setup token', false);
+      return json(res, 403, { error: 'setup token required or wrong' });
+    }
     const pw = String(body.password || '');
     if (weakPassword(pw)) return json(res, 400, { error: 'password is too common or too short — use 8+ characters that are not a dictionary word' });
     setSetting('admin_hash', hashPassword(pw));
+    setSetting('setup_token_hash', null);   // single use
     if (body.child_name != null) setSetting('child_name', clampStr(body.child_name, 40));
     logEvent('setup', ip);
     return json(res, 200, { ok: true }, { 'set-cookie': newSession() });
@@ -1117,6 +1133,17 @@ seed();
 if (process.env.ADMIN_PASSWORD && !getSetting('admin_hash')) {
   setSetting('admin_hash', hashPassword(String(process.env.ADMIN_PASSWORD)));
   console.log('admin password set from ADMIN_PASSWORD env (first run only)');
+}
+// Setup bootstrap token — closes the first-writer-wins race on a fresh board:
+// a stranger who finds the URL before the parent cannot claim the admin account.
+// Issued once (or supplied by the operator via SETUP_TOKEN for headless/PaaS
+// deploys), printed once, consumed by the first successful setup.
+if (!getSetting('admin_hash') && !getSetting('setup_token_hash')) {
+  const raw = process.env.SETUP_TOKEN || crypto.randomBytes(32).toString('hex');
+  setSetting('setup_token_hash', sha256(raw));
+  console.log(process.env.SETUP_TOKEN
+    ? 'setup token provided via SETUP_TOKEN env'
+    : `setup token: ${raw}`);
 }
 
 if (require.main === module) {

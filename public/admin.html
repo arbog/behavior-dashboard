@@ -115,6 +115,7 @@ async function showAuth() {
   $('#authCard').innerHTML = me.setup
     ? `<h1>Welcome to the board</h1>
        <div class="dim">First run: pick a password for this console, and who the board is for.</div>
+       <div class="mt"><small class="dim">Setup token (printed in the server log at first boot, or the <code>SETUP_TOKEN</code> you deployed with)</small><input id="auToken" autocomplete="off" spellcheck="false" placeholder="64 hex characters"></div>
        <div class="mt"><small class="dim">Child's name (shown on the kiosk, in scripts)</small><input id="auName" maxlength="40" placeholder="e.g. Sam"></div>
        <div class="mt"><small class="dim">Admin password (8+ characters)</small><input id="auPw" type="password" autocomplete="new-password"></div>
        <div class="mt"><button class="b" id="auGo" style="width:100%">Create the console</button></div>
@@ -129,7 +130,7 @@ async function showAuth() {
       // the page never sees the token
       const r = await fetch(me.setup ? '/api/admin/setup' : '/api/admin/login', {
         method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(me.setup ? { password: $('#auPw').value, child_name: $('#auName').value } : { password: $('#auPw').value }),
+        body: JSON.stringify(me.setup ? { password: $('#auPw').value, child_name: $('#auName').value, token: $('#auToken').value } : { password: $('#auPw').value }),
       });
       if (!r.ok) { const e = await r.json().catch(() => ({})); alert(e.error || 'Error'); return; }
       $('#auth').hidden = true;

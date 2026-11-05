@@ -33,7 +33,26 @@ environment:
   - ADMIN_PASSWORD=${ADMIN_PASSWORD}
   - KIOSK_TOKEN=${KIOSK_TOKEN}   # optional; else one is generated
   - SECURE_COOKIES=1             # set ONLY when served over TLS (PaaS, tunnel)
+  - SETUP_TOKEN=${SETUP_TOKEN}   # optional; see "First run" below
 ```
+
+### First run and the setup token
+
+A fresh board refuses to be claimed without a **one-time setup token** —
+otherwise whoever reaches a new URL first becomes the admin. Two ways to get
+it:
+
+- **Interactive (self-host):** the server prints it once on first boot:
+  `setup token: <64 hex>` in the container log (`docker compose logs board`).
+  Paste it into the setup screen.
+- **Non-interactive (PaaS / unattended):** set `SETUP_TOKEN` in the
+  environment before the first boot; the log then only says
+  `setup token provided via SETUP_TOKEN env`. If you also set
+  `ADMIN_PASSWORD`, no token is issued at all — the board is configured at
+  boot and setup is permanently closed.
+
+The token is single-use: a successful setup deletes it, and a board can never
+be claimed twice.
 
 `ADMIN_PASSWORD` skips the setup screen; `KIOSK_TOKEN` seeds the kiosk code.
 After first run, the database is the source of truth (change the password in
