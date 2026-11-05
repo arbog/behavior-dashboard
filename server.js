@@ -467,6 +467,44 @@ function calendar(from = localParts().date, days = 7) {
   return out;
 }
 
+// ---- 0013: the board-capability model ----
+// Every family gets the least board that serves their child — and the most
+// only if they ask for it. A picture of the day (schedule + plans + choices)
+// is the floor every profile keeps; these seven flags are the rest. The
+// clinical profile names (research P1–P7, docs/research/child-profiles.md)
+// live in code only — the UI speaks in what the board DOES for the child.
+const CAPS = ['tools', 'rewards', 'battery', 'rules', 'abc', 'checkins', 'pause'];
+const PROFILE_PRESETS = {
+  standard:      { name: 'The full board',           blurb: 'The day, the battery, the rules, the plan when feelings get big — for a child working on regulation.', on: ['tools', 'rewards', 'battery', 'rules', 'abc', 'checkins', 'pause'] },
+  communication: { name: 'A way to say things',      blurb: 'Big taps that say yes, no, break, and more — no scoring anywhere, just a voice.',               on: ['tools'] },
+  anxiety:       { name: 'A calm, predictable day',  blurb: 'The day they can see coming, and a calm-down plan instead of a discipline battery.',             on: ['tools', 'checkins'] },
+  transitions:   { name: 'Tasks made possible',      blurb: 'First-then clarity and a light reward — for the child who struggles to start and finish.',      on: ['tools', 'rewards'] },
+  sensory:       { name: 'A calmer screen',          blurb: 'Breaks built into the day and a sensory kit — no X marks, no scoring.',                        on: ['tools'] },
+  routines:      { name: 'A kind checklist',         blurb: 'Routines, hygiene, sleep — a gentle checklist day with a small reward.',                        on: ['rewards'] },
+  gentle:        { name: 'The day, not the mistakes', blurb: 'The day, what they are working for, all-done joy — nothing behavior-protocol at all.',          on: ['rewards'] },
+};
+// Choices are the floor's voice (every profile enables them); schedule, plans
+// and the calendar are unconditional too.
+const profileFlags = id => {
+  const f = Object.fromEntries(['choices', ...CAPS].map(c => [c, false]));   // choices: the floor's voice
+  f.choices = true;
+  (PROFILE_PRESETS[id] || PROFILE_PRESETS.standard).on.forEach(c => { f[c] = true; });
+  return f;
+};
+// The live profile: the chosen preset, refined by any explicit per-flag
+// overrides a family has made. Survives a preset switch by design: switching
+// a preset resets the flags, an explicit map replaces them.
+function profile() {
+  const id = PROFILE_PRESETS[getSetting('profile_id')] ? getSetting('profile_id') : 'standard';
+  let flags = profileFlags(id);
+  try { flags = { ...flags, ...(JSON.parse(getSetting('profile_overrides') || '{}')) }; } catch {}
+  return { id, ...flags };
+}
+const cap = c => profile()[c];
+// A capability-specific endpoint on a board whose profile dropped that part is
+// not a bug to debug — it is 404, the same shape as an unknown route.
+const need = (c, res) => cap(c) ? null : json(res, 404, { error: 'that part of the board is switched off in this profile' });
+
 function todayPayload() {
   const date = ensureDay();
   const { time } = localParts();
@@ -477,11 +515,13 @@ function todayPayload() {
   const rules = db.prepare('SELECT id,title,body,icon FROM rules ORDER BY position,id').all();
   const tools = db.prepare('SELECT id,label,icon FROM tools ORDER BY position,id').all();
   const used = new Set(todayRows('SELECT tool_id FROM tool_uses WHERE 1').map(r => r.tool_id));
+  const b = cap('battery'), flags = profile();
   return {
     date, time, day, mode: mode || { name: day?.mode_name || '', emoji: '', color: '#4f8cff' },
     items: items.map(i => ({ ...i, status: itemStatus(i) })), reward: day ? reward(day, items) : null, choices,
-    battery: batteryView(batteryLines()), rules, tools: tools.map(t => ({ ...t, used: used.has(t.id) })),
-    pause: pauseState(), rewards: rewards(), child_name: childName(),
+    caps: flags, ...(!b ? {} : { battery: batteryView(batteryLines()) }),
+    rules: cap('rules') ? rules : [], tools: cap('tools') ? tools.map(t => ({ ...t, used: used.has(t.id) })) : [],
+    ...(!b || !cap('pause') ? {} : { pause: pauseState() }), rewards: cap('rewards') ? rewards() : [], child_name: childName(),
     plan: day ? { label: day.plan_label || '', note: day.plan_note || '', kind: day.plan_kind || '' } : null,
     calendar: calendar(date, 7),
   };
@@ -693,6 +733,7 @@ function kiosk(req, res, url, body) {
   // Tapping a tool is a tool use: it counts toward the rule that reinforcement
   // resumes only after a check-in AND a tool — the one thing to reach for.
   if (req.method === 'POST' && (m = url.pathname.match(/^\/api\/today\/tools\/(\d+)\/use$/))) {
+    const gtooK = need('tools', res); if (gtooK) return gtooK;
     const tool = db.prepare('SELECT * FROM tools WHERE id=?').get(Number(m[1]));
     if (!tool) return json(res, 404, { error: 'not found' });
     db.prepare('INSERT INTO tool_uses(ts,tool_id,date,by) VALUES(?,?,?,?)').run(tsNow(), tool.id, localParts().date, clampStr(body.by, 40) || childName() || 'kiosk');
@@ -782,15 +823,17 @@ function adminConfig() {
   const eff = resolveMode(date, dow);
   const opts = { A: [], B: [], C: [] };
   for (const o of db.prepare('SELECT kind,label FROM abc_options ORDER BY position,id').all()) opts[o.kind].push(o.label);
+  const flags = profile();
   return {
+    profile: { ...flags, presets: Object.entries(PROFILE_PRESETS).map(([id, p]) => ({ id, name: p.name, blurb: p.blurb })) },
     modes: db.prepare('SELECT * FROM modes ORDER BY sort,id').all().map(modeWithItems),
     weekdays: Object.fromEntries(db.prepare('SELECT dow,mode_id FROM weekday_modes').all().map(r => [r.dow, r.mode_id])),
     override: getSetting('override_date') === date ? Number(getSetting('override_mode_id')) || null : null,
     effective: eff.mode ? { mode_id: eff.mode.id, source: eff.source } : null,
     choices: db.prepare('SELECT label,icon FROM choices ORDER BY position,id').all(),
-    abc_options: opts,
-    regulation: regulation(),
-    rewards: rewards(),
+    abc_options: flags.abc ? opts : { A: [], B: [], C: [] },
+    regulation: flags.battery || flags.checkins || flags.pause ? regulation() : null,
+    rewards: flags.rewards ? rewards() : [],
     calendar: calendar(date, 14),
     plans: db.prepare('SELECT * FROM day_plans ORDER BY date').all(),
     identity: { child_name: childName() },
@@ -1036,6 +1079,27 @@ function admin(req, res, url, body, user) {
     setSetting('child_name', clampStr(body.child_name, 40));
     return json(res, 200, { ok: true, child_name: childName() });
   }
+  // The board profile: pick a preset (which resets the flags to it) and/or
+  // hand an explicit capabilities map (which is stored verbatim over the
+  // preset). Omitting capabilities keeps the family's refinements.
+  if (M === 'PUT' && p === '/api/admin/profile') {
+    if (body.id !== undefined && !PROFILE_PRESETS[body.id]) return json(res, 400, { error: 'unknown profile — pick one of: ' + Object.keys(PROFILE_PRESETS).join(', ') });
+    let flags = null;
+    if (body.capabilities !== undefined) {
+      const given = body.capabilities && typeof body.capabilities === 'object' && !Array.isArray(body.capabilities) ? body.capabilities : null;
+      if (!given) return json(res, 400, { error: 'capabilities must be an object of boolean flags' });
+      const bad = Object.keys(given).filter(k => !CAPS.includes(k));
+      if (bad.length) return json(res, 400, { error: 'unknown capability: ' + bad.join(', ') });
+      flags = { ...profileFlags(body.id ?? (getSetting('profile_id') in PROFILE_PRESETS ? getSetting('profile_id') : 'standard')), ...Object.fromEntries(Object.entries(given).map(([k, v]) => [k, !!v])) };
+    }
+    const before = profile();
+    if (body.id !== undefined) setSetting('profile_id', body.id);
+    if (flags) setSetting('profile_overrides', JSON.stringify(flags));
+    else if (body.id !== undefined) setSetting('profile_overrides', null);   // a preset switch is a reset
+    const after = profile();
+    if (JSON.stringify(before) !== JSON.stringify(after)) logEvent('profile_change', ip, after.id);
+    return json(res, 200, { ok: true, profile: after });
+  }
   if (M === 'PUT' && p === '/api/admin/bands') {
     const bs = (Array.isArray(body.bands) ? body.bands : []).slice(0, 4);
     if (bs.length < 4) return json(res, 400, { error: 'four bands required (100 / 80 / 60 / 0)' });
@@ -1045,6 +1109,7 @@ function admin(req, res, url, body, user) {
     return json(res, 200, { ok: true, bands: out });
   }
   if (M === 'PUT' && p === '/api/admin/rewards') {
+    const grow = need('rewards', res); if (grow) return grow;
     const lines = (Array.isArray(body.lines) ? body.lines : []).map(l => clampStr(l, 200)).filter(Boolean);
     if (!lines.length) return json(res, 400, { error: 'at least one reward line' });
     setSetting('rewards_v1', JSON.stringify(lines));
@@ -1126,6 +1191,7 @@ function admin(req, res, url, body, user) {
     return json(res, 200, { ok: true });
   }
   if (M === 'PUT' && p === '/api/admin/abc-options') {
+    const gabc = need('abc', res); if (gabc) return gabc;
     tx(() => {
       db.prepare('DELETE FROM abc_options').run();
       for (const k of ['A', 'B', 'C']) (body[k] || []).filter(l => clampStr(l).trim()).forEach((l, i) => db.prepare('INSERT INTO abc_options(kind,label,position) VALUES(?,?,?)').run(k, clampStr(l, 120), i));
@@ -1133,6 +1199,7 @@ function admin(req, res, url, body, user) {
     return json(res, 200, { ok: true });
   }
   if (M === 'POST' && p === '/api/admin/abc') {
+    const gabc2 = need('abc', res); if (gabc2) return gabc2;
     const arr = a => JSON.stringify((Array.isArray(a) ? a : []).map(x => clampStr(x, 120)));
     const ts = body.ts && /^\d{4}-\d\d-\d\d[ T]\d\d:\d\d/.test(body.ts) ? body.ts.replace('T', ' ').slice(0, 16) + ':00' : tsNow();
     const sev = Math.max(0, Math.min(5, toInt(body.severity) ?? ((Array.isArray(body.behaviors) ? body.behaviors.length : 0) ? 3 : 0)));
@@ -1141,6 +1208,7 @@ function admin(req, res, url, body, user) {
     return json(res, 200, { id: Number(id) });
   }
   if (M === 'GET' && p === '/api/admin/abc') {
+    const gabc3 = need('abc', res); if (gabc3) return gabc3;
     const rows = abcRows(Math.min(Number(url.searchParams.get('days')) || 30, 365));
     return json(res, 200, { events: rows, summary: abcSummary(rows) });
   }
@@ -1149,8 +1217,9 @@ function admin(req, res, url, body, user) {
   }
 
   // ---------- regulation: battery, tools, rules, check-ins, risk ----------
-  if (M === 'GET' && p === '/api/admin/regulation') return json(res, 200, regulation());
+  if (M === 'GET' && p === '/api/admin/regulation') { const fl = profile(); return (fl.battery || fl.checkins || fl.pause) ? json(res, 200, regulation()) : json(res, 404, { error: 'that part of the board is switched off in this profile' }); }
   if (M === 'POST' && p === '/api/admin/battery') {
+    const gbat = need('battery', res); if (gbat) return gbat;
     const cur = batteryLines();
     const delta = toInt(body.delta);
     const next = delta != null ? cur + delta : toInt(body.lines);
@@ -1160,6 +1229,7 @@ function admin(req, res, url, body, user) {
   // One tap = the if-behaviors-occur procedure: name the rule, pause
   // reinforcement, drop a battery line, hand back the script + next steps.
   if (M === 'POST' && p === '/api/admin/behavior') {
+    const gbeh = need('abc', res); if (gbeh) return gbeh;
     const list = v => (Array.isArray(v) ? v : v ? [String(v)] : []);
     const rule = body.rule_id ? db.prepare('SELECT * FROM rules WHERE id=?').get(Number(body.rule_id)) : null;
     const B = list(body.behaviors), A = list(body.antecedents);
@@ -1183,6 +1253,7 @@ function admin(req, res, url, body, user) {
   }
   // A check-in: the risk factors, plus the battery as the parent sees it.
   if (M === 'POST' && p === '/api/admin/checkins') {
+    const gchk = need('checkins', res); if (gchk) return gchk;
     const lv = k => Math.max(0, Math.min(3, toInt(body[k]) ?? 0));
     const rec = { hunger: lv('hunger'), boredom: lv('boredom'), house: lv('house') };
     const battery = Math.max(0, Math.min(BATTERY_LINES, toInt(body.battery) ?? batteryLines()));
@@ -1191,21 +1262,24 @@ function admin(req, res, url, body, user) {
     if (toInt(body.battery) != null && battery !== batteryLines()) batteryWrite(battery, battery - batteryLines(), 'check-in', user);
     return json(res, 200, { id: Number(id), ...regulation(), risk: riskFromLevels(rec) });
   }
-  if (M === 'POST' && p === '/api/admin/pause') { setPause(body.reason, toInt(body.minutes)); return json(res, 200, { pause: pauseState(), ...regulation() }); }
+  if (M === 'POST' && p === '/api/admin/pause') { const gp = need('pause', res); if (gp) return gp; setPause(body.reason, toInt(body.minutes)); return json(res, 200, { pause: pauseState(), ...regulation() }); }
   // "Once back to baseline, re-engage" — restoring lines is the record that it
   // happened, and it is what un-pauses the fun.
   if (M === 'POST' && p === '/api/admin/resume') {
+    const gres = need('pause', res); if (gres) return gres;
     const restore = Math.max(0, Math.min(BATTERY_LINES, toInt(body.restore) ?? 1));
     const battery = batterySet(batteryLines() + restore, restore, 'back to baseline — re-engaged', user);
     clearPause();
     return json(res, 200, { battery, pause: pauseState(), ...regulation() });
   }
   if (M === 'PUT' && p === '/api/admin/tools') {
+    const gtoo = need('tools', res); if (gtoo) return gtoo;
     tx(() => syncList('tools', ['label', 'icon'], (body.tools || []).filter(t => clampStr(t.label).trim())
       .map(t => ({ id: toInt(t.id), label: clampStr(t.label, 80), icon: clampStr(t.icon, 8) }))));
     return json(res, 200, { ok: true });
   }
   if (M === 'PUT' && p === '/api/admin/rules') {
+    const grul = need('rules', res); if (grul) return grul;
     tx(() => syncList('rules', ['title', 'body', 'icon'], (body.rules || []).filter(r => clampStr(r.title).trim())
       .map(r => ({ id: toInt(r.id), title: clampStr(r.title, 120), body: clampStr(r.body, 200), icon: clampStr(r.icon, 8) }))));
     return json(res, 200, { ok: true });
@@ -1358,4 +1432,4 @@ if (!getSetting('admin_hash') && !getSetting('setup_token_hash')) {
 if (require.main === module) {
   server.listen(PORT, () => console.log(`behavior-dashboard listening on :${PORT} (db ${DB_PATH})`));
 }
-module.exports = { server, db, itemStatus, reward, riskFromLevels, batteryView, BATTERY_LINES, hashPassword, verifyPassword, clientIp, isPrivateAddr };
+module.exports = { server, db, itemStatus, reward, riskFromLevels, batteryView, BATTERY_LINES, hashPassword, verifyPassword, clientIp, isPrivateAddr, profileFlags, PROFILE_PRESETS, profile };
