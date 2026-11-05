@@ -97,7 +97,9 @@ the deployer's decision:
 - **No multi-tenancy, no per-user data isolation** — one board per instance.
   Running several children = several instances (or see the roadmap).
 - **No OIDC/SSO yet** — password + kiosk code is the whole auth surface.
-  (On the roadmap.)
+  (On the roadmap.) A passkey (WebAuthn) console login is sketched in
+  [self-service.md](self-service.md): it would be a second way to obtain the
+  same session, with the password kept as recovery — not a new auth surface.
 - **The audit log is bounded and local** — 500 rows, on the box. Export is on
   the roadmap; today it is a window, not an archive.
 - **No account enumeration hardening** — `/admin` and `/` exist regardless of

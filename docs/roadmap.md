@@ -13,10 +13,14 @@ What is deliberately not here yet, and the order we are thinking in.
 
 ## Near term
 
-- **The "click a button" deploy story.** PaaS templates (Render / Railway /
-  Fly.io / a bare `docker run` one-liner) so a parent who has never self-hosted
-  can be running a board in ten minutes. This is the front door for the
-  community; it drives the rest of the UX (clear first-run, no assumptions).
+- **The "click a button" deploy story** — sketched in
+  [docs/self-service.md](self-service.md): the provisioning contract (public
+  HTTPS, `SECURE_COOKIES=1`, persistent `/data`, first-run lands on passkey
+  enrollment) plus the passkey admin model (WebAuthn enrollment/sign-in as a
+  preferred way to obtain the existing session, password kept as recovery,
+  kiosk code untouched). PaaS templates (Render / Railway / Fly.io / a bare
+  `docker run` one-liner) are the open particulars. This is the front door for
+  the community; it drives the rest of the UX (clear first-run, no assumptions).
 - **Marketing site.** A small public site: what it is, screenshots, the
   security model in plain words, the quickstart, a link to the repo. The
   placeholder `my-super-behavior-dashboard.amazing` is a stand-in until the
