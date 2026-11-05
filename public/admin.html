@@ -1,0 +1,582 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Behavior Board — Admin</title>
+<style>
+  :root { --bg:#0f1226; --card:#1a1f3d; --card2:#171b37; --line:#2b3162; --text:#f4f6ff; --dim:#98a0d0; --accent:#4f8cff; --ok:#34d399; --bad:#f87171; --star:#fbbf24;
+          --hi:rgba(255,255,255,.06); --shadow:0 4px 14px rgba(4,6,20,.4); }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body { margin:0; color:var(--text); font:16px/1.45 system-ui,"Segoe UI",Roboto,sans-serif; padding-bottom:80px;
+    background:radial-gradient(900px 420px at 50% -80px, #1f2554 0%, rgba(31,37,84,0) 70%), var(--bg); background-attachment:fixed;
+    -webkit-font-smoothing:antialiased; }
+  header { padding:14px 16px; display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; border-bottom:1px solid var(--line); }
+  header h1 { font-size:18px; margin:0; font-weight:800; letter-spacing:.01em; }
+  header a { color:var(--dim); font-size:14px; text-decoration:none; padding:6px 12px; border:1px solid var(--line); border-radius:99px; }
+  header a:hover { color:var(--text); border-color:var(--accent); }
+  #stat { padding:4px 12px; border-radius:99px; background:rgba(255,255,255,.04); border:1px solid var(--line); }
+  #stat:empty { display:none; }
+  nav { display:flex; gap:6px; padding:10px 12px; overflow-x:auto; scrollbar-width:none; position:sticky; top:0; z-index:2;
+    background:rgba(15,18,38,.82); -webkit-backdrop-filter:blur(10px); backdrop-filter:blur(10px); border-bottom:1px solid var(--line); }
+  nav::-webkit-scrollbar { display:none; }
+  nav button { background:var(--card); color:var(--dim); border:1px solid var(--line); padding:8px 14px; border-radius:99px; font-size:15px; font-weight:600;
+    white-space:nowrap; cursor:pointer; transition:background .12s, color .12s, border-color .12s; }
+  nav button:hover { color:var(--text); border-color:#3a4180; }
+  nav button.on { background:linear-gradient(180deg, #6a9fff 0%, var(--accent) 100%); border-color:var(--accent); color:#fff;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.3), 0 2px 10px rgba(79,140,255,.35); }
+  main { max-width:760px; margin:0 auto; padding:14px 12px; }
+  .card { background:linear-gradient(180deg, var(--card) 0%, var(--card2) 100%); border:1px solid var(--line); border-radius:16px; padding:14px;
+    margin-bottom:14px; box-shadow:inset 0 1px 0 var(--hi), var(--shadow); }
+  h2 { font-size:13px; margin:0 0 10px; color:#a9b1e0; text-transform:uppercase; letter-spacing:.12em; font-weight:800; }
+  button, select, input, textarea { font:inherit; }
+  input, select, textarea { background:#0f1226; color:var(--text); border:1px solid var(--line); border-radius:10px; padding:9px 10px; width:100%;
+    box-shadow:inset 0 2px 4px rgba(0,0,0,.25); transition:border-color .12s, box-shadow .12s; }
+  input:focus, select:focus, textarea:focus { outline:0; border-color:var(--accent); box-shadow:inset 0 2px 4px rgba(0,0,0,.25), 0 0 0 3px rgba(79,140,255,.25); }
+  input::placeholder, textarea::placeholder { color:#6b73a8; }
+  button { cursor:pointer; }
+  button:focus-visible { outline:2px solid #9bbcff; outline-offset:2px; }
+  button.b { background:linear-gradient(180deg, #6a9fff 0%, var(--accent) 100%); color:#fff; border:0; border-radius:10px; padding:10px 16px; font-weight:700;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.3), 0 2px 8px rgba(79,140,255,.3); transition:transform .08s, filter .12s; }
+  button.b:hover { filter:brightness(1.08); }
+  button.b:active { transform:translateY(1px) scale(.99); filter:brightness(.95); }
+  button.b.sec { background:rgba(255,255,255,.04); border:1px solid #3a4180; color:var(--text); box-shadow:inset 0 1px 0 var(--hi); }
+  button.b.del { background:rgba(248,113,113,.08); border:1px solid var(--bad); color:var(--bad); box-shadow:none; }
+  button.b.del:hover { background:rgba(248,113,113,.18); }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .grow { flex:1; min-width:120px; }
+  .item { display:grid; grid-template-columns: 1fr auto; gap:8px; padding:11px 0; border-bottom:1px solid var(--line); }
+  .item:last-child { border-bottom:0; }
+  .item .name { font-weight:700; } .item small { color:var(--dim); }
+  .seg { display:flex; gap:4px; }
+  .seg button { border:1px solid var(--line); background:rgba(255,255,255,.03); color:var(--dim); border-radius:9px; padding:8px 10px; min-width:44px; font-size:16px;
+    transition:background .12s, color .12s; }
+  .seg button:hover { color:var(--text); border-color:#3a4180; }
+  .seg button.on.ok { background:var(--ok); color:#06281b; border-color:var(--ok); box-shadow:0 0 10px rgba(52,211,153,.35); }
+  .seg button.on.no { background:var(--bad); color:#2b0707; border-color:var(--bad); box-shadow:0 0 10px rgba(248,113,113,.3); }
+  .seg button.on.turn { background:var(--star); color:#33260a; border-color:var(--star); box-shadow:0 0 10px rgba(251,191,36,.3); }
+  .pills { display:flex; flex-wrap:wrap; gap:8px; }
+  .pill { border:1px solid #3a4180; background:rgba(255,255,255,.04); color:var(--text); border-radius:99px; padding:10px 14px;
+    transition:background .12s, transform .08s; }
+  .pill:active { transform:scale(.96); }
+  .pill.on { background:linear-gradient(180deg, #6a9fff 0%, var(--accent) 100%); border-color:var(--accent); box-shadow:0 0 12px rgba(79,140,255,.3); }
+  .big { font-size:28px; font-weight:800; font-variant-numeric:tabular-nums; }
+  .tag { font-size:12px; font-weight:600; padding:2px 9px; border-radius:99px; background:#2b3162; vertical-align:middle; }
+  .bar { height:8px; background:linear-gradient(90deg, #3d78f0, #6aa0ff); border-radius:4px; }
+  table { width:100%; border-collapse:collapse; font-size:14px; font-variant-numeric:tabular-nums; }
+  td, th { padding:7px 6px; border-bottom:1px solid var(--line); text-align:left; }
+  th { color:var(--dim); font-size:12px; text-transform:uppercase; letter-spacing:.08em; font-weight:700; }
+  tr:last-child td { border-bottom:0; }
+  tbody tr:hover td, table tr:hover td { background:rgba(255,255,255,.03); }
+  .toast { position:fixed; bottom:16px; left:50%; transform:translateX(-50%) translateY(8px); background:var(--ok); color:#06281b; font-weight:700; padding:10px 20px; border-radius:99px;
+    box-shadow:0 6px 20px rgba(0,0,0,.4); opacity:0; transition:opacity .2s, transform .2s; pointer-events:none; z-index:5; }
+  .toast.show { opacity:1; transform:translateX(-50%); }
+  .dim { color:var(--dim); } .mt { margin-top:8px; }
+  code { background:#0f1226; border:1px solid var(--line); border-radius:6px; padding:1px 6px; font-size:.9em; word-break:break-all; }
+  ::selection { background:rgba(79,140,255,.4); }
+  /* full-screen auth overlays (login / first-time setup) */
+  #auth { position:fixed; inset:0; z-index:4; overflow:auto; display:flex; align-items:flex-start; justify-content:center; padding:12vh 16px;
+    background:radial-gradient(900px 420px at 50% -80px, #1f2554 0%, rgba(31,37,84,0) 70%), var(--bg); }
+  #auth[hidden] { display:none; }
+  #auth .card { width:100%; max-width:420px; }
+  #auth h1 { font-size:20px; margin:0 0 4px; }
+</style>
+</head>
+<body>
+<div id="auth" hidden>
+  <div class="card" id="authCard"></div>
+</div>
+<header><h1>Behavior Board — Admin</h1><span id="stat" class="dim" style="font-size:14px"></span><a href="/" target="_blank">Open kiosk ↗</a></header>
+<nav id="nav"></nav>
+<main id="view"></main>
+<div class="toast" id="toast">Saved</div>
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]));
+const DOW = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+let tab = 'today', cfg = null, today = null, abcSel = { A: new Set(), B: new Set(), C: new Set() };
+
+async function api(method, url, body) {
+  const r = await fetch('/api/admin' + url, { method, credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+  if (!r.ok) {
+    if (r.status === 401 && url !== '/me') { const m = await r.json().catch(() => ({})); if (m.setup) return showAuth(); throw new Error('auth'); }
+    alert((await r.json().catch(() => ({}))).error || 'Error ' + r.status);
+    throw new Error('api');
+  }
+  return r.json();
+}
+function toast(t = 'Saved') { const e = $('#toast'); e.textContent = t; e.classList.add('show'); setTimeout(() => e.classList.remove('show'), 1200); }
+
+// ---------- auth (login / first-time setup) ----------
+async function showAuth() {
+  let me;
+  try { me = await (await fetch('/api/admin/me', { credentials: 'same-origin' })).json(); } catch { return; }
+  $('#auth').hidden = false;
+  $('#authCard').innerHTML = me.setup
+    ? `<h1>Welcome to the board</h1>
+       <div class="dim">First run: pick a password for this console, and who the board is for.</div>
+       <div class="mt"><small class="dim">Child's name (shown on the kiosk, in scripts)</small><input id="auName" maxlength="40" placeholder="e.g. Sam"></div>
+       <div class="mt"><small class="dim">Admin password (8+ characters)</small><input id="auPw" type="password" autocomplete="new-password"></div>
+       <div class="mt"><button class="b" id="auGo" style="width:100%">Create the console</button></div>
+       <div class="dim mt" style="font-size:13px">Your kiosk code appears next — it is what the TV/iPad needs. Nothing leaves this server.</div>`
+    : `<h1>Sign in</h1>
+       <div class="dim">This console is private. The kiosk code is not the same thing — it lives on the board itself.</div>
+       <div class="mt"><input id="auPw" type="password" placeholder="Password" autocomplete="current-password"></div>
+       <div class="mt"><button class="b" id="auGo" style="width:100%">Sign in</button></div>`;
+  $('#auGo').onclick = async () => {
+    try {
+      // the session arrives as an HttpOnly Set-Cookie; the browser stores it,
+      // the page never sees the token
+      const r = await fetch(me.setup ? '/api/admin/setup' : '/api/admin/login', {
+        method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(me.setup ? { password: $('#auPw').value, child_name: $('#auName').value } : { password: $('#auPw').value }),
+      });
+      if (!r.ok) { const e = await r.json().catch(() => ({})); alert(e.error || 'Error'); return; }
+      $('#auth').hidden = true;
+      show();
+    } catch (e) { /* network */ }
+  };
+  setTimeout(() => $('#auPw')?.focus(), 50);
+}
+
+const TABS = { today: 'Today', battery: 'Battery & check-in', behavior: 'Log behavior', calendar: 'Calendar', risk: 'Patterns', modes: 'Modes', week: 'Week & lists', settings: 'Settings', history: 'History' };
+function nav() {
+  $('#nav').innerHTML = Object.entries(TABS).map(([k, v]) => `<button class="${k === tab ? 'on' : ''}" data-t="${k}">${v}</button>`).join('');
+  $('#nav').querySelectorAll('button').forEach(b => b.onclick = () => { tab = b.dataset.t; show(); });
+}
+// The protocol's live states, always in reach: the battery, paused fun, and whether a check-in is overdue.
+function stat() {
+  const r = cfg.regulation;
+  $('#stat').innerHTML = `<span style="color:${r.battery.band.color}">▮ ${esc(r.battery.band.name)} ${r.battery.lines}/${r.battery.max}</span>`
+    + (r.pause.active ? ' · <span style="color:var(--bad)">rewards paused</span>' : '')
+    + (r.check_in.due ? ` · <span style="color:var(--bad)">${ciDue(r.check_in)}</span>` : '');
+}
+// "every N minutes" — with no check-in on record there is nothing to be "over" by.
+const ciDue = ci => (!ci.last ? 'no check-in yet today'
+  : ci.overdue_mins ? `check-in ${ci.overdue_mins} min overdue` : 'check-in due');
+async function show() {
+  nav();
+  [cfg, today] = await Promise.all([api('GET', '/config'), api('GET', '/today')]);
+  stat();
+  ({ today: vToday, battery: vBattery, behavior: vBehavior, calendar: vCalendar, risk: vRisk, modes: vModes, week: vWeek, settings: vSettings, history: vHistory })[tab]();
+}
+
+// ---------- Today ----------
+function vToday() {
+  const t = today, r = t.reward, ov = cfg.override;
+  $('#view').innerHTML = `
+  <div class="card"><h2>Mode today</h2>
+    <div class="row"><select id="ov" class="grow">
+      <option value="">Automatic (${esc(DOW[new Date().getDay()])} → ${esc(cfg.modes.find(m => m.id === cfg.weekdays[new Date().getDay()])?.name || '—')})</option>
+      ${cfg.modes.map(m => `<option value="${m.id}" ${ov === m.id ? 'selected' : ''}>${esc(m.emoji)} ${esc(m.name)}</option>`).join('')}
+    </select><button class="b" id="ovBtn">Apply</button></div>
+    <div class="dim mt">Now showing: <b>${esc(t.mode.emoji)} ${esc(t.mode.name)}</b> ${ov ? '<span class="tag">manual override</span>' : ''}. Changing mode rebuilds today's schedule and clears marks.</div></div>
+  <div class="card"><h2>Schedule — tap to score</h2>
+    ${t.items.map(i => `<div class="item"><div><div class="name">${esc(i.icon)} ${esc(i.title)} <small>${esc(i.start)}</small></div>
+      <small>Finish / Rules</small></div>
+      <div><div class="seg" data-id="${i.id}" data-k="finished">
+        <button data-v="1" class="${i.finished === 1 ? 'on ok' : ''}">✓</button><button data-v="0" class="${i.finished === 0 ? 'on no' : ''}">✗</button></div>
+      <div class="seg mt" data-id="${i.id}" data-k="rules">
+        <button data-v="check" class="${i.rules === 'check' ? 'on ok' : ''}">✓</button>
+        <button data-v="turnaround" title="Turned it around / used a coping tool" class="${i.rules === 'turnaround' ? 'on turn' : ''}">⭐</button>
+        <button data-v="x" class="${i.rules === 'x' ? 'on no' : ''}">✗</button></div></div></div>`).join('') || '<div class="dim">No items in this mode.</div>'}
+    <div class="dim mt">⭐ = broke a rule but turned it around or used a coping tool — still counts as a check. Tap a selected button again to clear.</div>
+    <div class="mt"><button class="b del" id="reset">Reset today's marks</button></div></div>
+  <div class="card"><h2>Reward</h2>
+    <div class="big">${r.minutes} min <span class="tag">${r.xs} X · ${r.checks} ✓ · ${r.pending} pending${r.final ? ' · final' : ''}</span></div>
+    <div class="row mt"><div class="grow"><small class="dim">Working for</small>
+      <input id="wf" value="${esc(t.day.working_for)}" list="chs"><datalist id="chs">${cfg.choices.map(c => `<option value="${esc(c.label)}">`).join('')}</datalist></div>
+      <button class="b" id="wfBtn">Save</button></div></div>`;
+  $('#ovBtn').onclick = async () => { await api('PUT', '/override', { mode_id: $('#ov').value || null }); toast(); show(); };
+  $('#wfBtn').onclick = async () => { await api('PUT', '/today', { working_for: $('#wf').value }); toast(); };
+  $('#reset').onclick = async () => { if (confirm("Clear all of today's marks?")) { await api('POST', '/today/reset', {}); show(); } };
+  $('#view').querySelectorAll('.seg').forEach(seg => seg.querySelectorAll('button').forEach(b => b.onclick = async () => {
+    const it = today.items.find(x => x.id == seg.dataset.id), k = seg.dataset.k;
+    const v = k === 'finished' ? Number(b.dataset.v) : b.dataset.v;
+    await api('PATCH', `/day-items/${it.id}`, { [k]: it[k] === v ? null : v }); show();
+  }));
+}
+
+// ---------- ABC behavior log ----------
+const ABC = { A: ['Antecedent', 'What was going on before the behavior?'], B: ['Behavior', 'What behavior(s) did they engage in?'], C: ['Consequence', 'Not always negative! What happened right after?'] };
+function vBehavior() {
+  $('#view').innerHTML = `<div class="card"><h2>ABC behavior form</h2>
+    ${['A', 'B', 'C'].map(k => `<div class="mt"><b>${ABC[k][0]}</b> <span class="dim">— ${ABC[k][1]}</span>
+      <div class="pills mt" data-k="${k}">${cfg.abc_options[k].map(o => `<button class="pill ${abcSel[k].has(o) ? 'on' : ''}" data-o="${esc(o)}">${esc(o)}</button>`).join('')}</div></div>`).join('')}
+    <div class="row mt"><div class="grow"><small class="dim">When (blank = now)</small><input type="datetime-local" id="ts"></div>
+      <div style="width:150px"><small class="dim">Severity</small><select id="sev"><option value="0">0 — note only</option><option value="3" selected>3 — blowup</option><option value="5">5 — big one</option></select></div></div>
+    <div class="mt"><small class="dim">Notes</small><textarea id="note" rows="2"></textarea></div>
+    <div class="mt"><button class="b" id="save">Save entry</button></div></div>
+    <div id="recent"></div>`;
+  $('#view').querySelectorAll('.pills').forEach(p => p.querySelectorAll('.pill').forEach(b => b.onclick = () => {
+    const s = abcSel[p.dataset.k]; s.has(b.dataset.o) ? s.delete(b.dataset.o) : s.add(b.dataset.o); b.classList.toggle('on');
+  }));
+  $('#save').onclick = async () => {
+    if (!['A', 'B', 'C'].some(k => abcSel[k].size)) return alert('Pick at least one option');
+    await api('POST', '/abc', { antecedents: [...abcSel.A], behaviors: [...abcSel.B], consequences: [...abcSel.C], note: $('#note').value, ts: $('#ts').value || undefined, severity: +$('#sev').value });
+    abcSel = { A: new Set(), B: new Set(), C: new Set() }; toast('Logged'); vBehavior();
+  };
+  api('GET', '/abc?days=14').then(d => { $('#recent').innerHTML = abcList(d.events.slice(0, 10), 'Recent entries'); wireDel(); });
+}
+const abcList = (ev, title) => `<div class="card"><h2>${title}</h2>${ev.map(e => `<div class="item"><div><div class="name">${esc(e.ts.slice(0, 16))}</div>
+  <small>A: ${esc(e.antecedents.join(', ') || '—')}<br>B: ${esc(e.behaviors.join(', ') || '—')}<br>C: ${esc(e.consequences.join(', ') || '—')}${e.note ? '<br>“' + esc(e.note) + '”' : ''}</small></div>
+  <button class="b del" data-del="${e.id}">✕</button></div>`).join('') || '<div class="dim">None yet.</div>'}</div>`;
+function wireDel() { $('#view').querySelectorAll('[data-del]').forEach(b => b.onclick = async () => { if (confirm('Delete this entry?')) { await api('DELETE', '/abc/' + b.dataset.del); show(); } }); }
+
+// ---------- Calendar: trips out, and the days that aren't a normal weekday ----------
+const dstr = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const KINDS = { free: 'free-form day', trip: 'day trip', plan: 'plan', special: 'special day' };
+
+function vCalendar() {
+  const days = cfg.calendar, tmr = dstr(new Date(Date.now() + 864e5));
+  $('#view').innerHTML = `
+  <div class="card"><h2>Give a day its own shape</h2>
+    <div class="row">
+      <select id="pKind" class="grow">${Object.entries(KINDS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select>
+      <input id="pDate" type="date" value="${tmr}" style="max-width:180px">
+    </div>
+    <div class="row mt"><input id="pLabel" class="grow" placeholder="Name the kiosk sees — Beach Day">
+      <select id="pMode" class="grow"><option value="">use that weekday's schedule</option>
+        ${cfg.modes.map(m => `<option value="${m.id}">${esc(m.emoji)} ${esc(m.name)}</option>`).join('')}</select></div>
+    <div class="row mt"><input id="pNote" class="grow" placeholder="Note under the name — we leave after breakfast">
+      <button class="b" id="pSave">Save the day</button></div>
+    <div class="dim mt">A plan outranks the weekday template. If the day hasn't been scored yet it rebuilds at once; a day already scored keeps its marks and just carries the name.</div></div>
+
+  <div class="card"><h2>Next two weeks</h2>
+    ${days.map(d => `<div class="item"><div><div class="name">${d.is_today ? '<b>Today</b>' : esc(d.day_name)} <small>${esc(d.date.slice(5))}</small></div>
+      <small>${esc(d.emoji)} ${esc(d.label || d.mode_name)}${d.label ? ` · ${esc(d.mode_name)}` : ''}${d.note ? ` · ${esc(d.note)}` : ''}</small></div>
+      <div class="seg"><button data-edit="${d.date}" title="load into the form">✎</button>
+        ${d.source === 'plan' ? `<button data-cut="${d.date}" title="back to the weekday">✕</button>` : ''}</div></div>`).join('')}</div>
+
+  <div class="card"><h2>A whole weekday, free-form</h2>
+    <div class="dim" style="margin-bottom:8px">A Saturday at home doing laundry and chilling is a shape of its own — pick the weekday and it uses the free-form schedule from now on. One day only? Put it on the calendar above.</div>
+    <div class="seg">${DOW.map((n, i) => `<button data-fd="${i}" title="map ${n} to the free-form schedule">${n.slice(0, 3)}</button>`).join('')}</div></div>`;
+
+  const form = () => ({
+    kind: $('#pKind').value, label: $('#pLabel').value, note: $('#pNote').value,
+    mode_id: $('#pMode').value ? Number($('#pMode').value) : null,
+  });
+  $('#pSave').onclick = async () => {
+    const date = $('#pDate').value || dstr(new Date());
+    await api('PUT', `/plans/${date}`, form());
+    toast(`${date.slice(5)} is on the calendar`); show();
+  };
+  $('#view').querySelectorAll('[data-edit]').forEach(b => b.onclick = () => {
+    const d = cfg.calendar.find(c => c.date === b.dataset.edit);
+    $('#pDate').value = d.date; $('#pLabel').value = d.label || ''; $('#pNote').value = d.note || '';
+    if (d.kind) $('#pKind').value = d.kind;
+    $('#pMode').value = d.source === 'plan' ? d.mode_id : '';
+    window.scrollTo(0, 0);
+  });
+  $('#view').querySelectorAll('[data-cut]').forEach(b => b.onclick = async () => {
+    await api('DELETE', `/plans/${b.dataset.cut}`); toast('back to the weekday'); show();
+  });
+  $('#view').querySelectorAll('[data-fd]').forEach(b => b.onclick = async () => {
+    const free = cfg.modes.find(m => m.name === 'Free Day');
+    if (!free) return alert('No free-form schedule yet — add one under Modes.');
+    await api('POST', '/free-weekday', { dow: Number(b.dataset.fd), mode: free.name });
+    toast(`${DOW[Number(b.dataset.fd)]}s are free-form now`); show();
+  });
+}
+
+// ---------- Modes ----------
+let editing = null;
+function vModes() {
+  if (editing) return editMode();
+  $('#view').innerHTML = cfg.modes.map(m => `<div class="card"><div class="row"><div class="grow"><div class="name big" style="font-size:20px">${esc(m.emoji)} ${esc(m.name)}</div>
+    <small class="dim">${m.items.length} activities · ${m.reward_all}/${m.reward_one_x}/${m.reward_two_x} min</small></div>
+    <button class="b sec" data-e="${m.id}">Edit</button></div></div>`).join('') + '<button class="b" id="new">+ New mode</button>';
+  $('#view').querySelectorAll('[data-e]').forEach(b => b.onclick = () => { editing = JSON.parse(JSON.stringify(cfg.modes.find(m => m.id == b.dataset.e))); vModes(); });
+  $('#new').onclick = () => { editing = { id: null, name: '', emoji: '', color: '#4f8cff', reward_all: 30, reward_one_x: 15, reward_two_x: 0, items: [] }; vModes(); };
+}
+function editMode() {
+  const m = editing;
+  $('#view').innerHTML = `<div class="card"><h2>${m.id ? 'Edit' : 'New'} mode</h2>
+    <div class="row"><input id="mn" class="grow" placeholder="Name" value="${esc(m.name)}"><input id="me" style="width:70px" placeholder="🙂" value="${esc(m.emoji)}"><input id="mc" type="color" style="width:60px" value="${esc(m.color)}"></div>
+    <div class="mt"><b>Reward minutes</b> <span class="dim">(all checks / 1 X / 2+ X)</span></div>
+    <div class="row mt"><input id="r0" type="number" min="0" value="${m.reward_all}"><input id="r1" type="number" min="0" value="${m.reward_one_x}"><input id="r2" type="number" min="0" value="${m.reward_two_x}"></div></div>
+    <div class="card"><h2>Activities</h2><div id="its">${m.items.map((i, n) => `
+      <div class="item" data-n="${n}"><div>
+        <div class="row"><input data-f="icon" style="width:60px" placeholder="🙂" value="${esc(i.icon)}"><input data-f="title" class="grow" placeholder="Activity" value="${esc(i.title)}"></div>
+        <div class="row mt"><input data-f="start" type="time" style="width:120px" value="${esc(i.start)}"><input data-f="minutes" type="number" min="0" style="width:90px" placeholder="min" value="${i.minutes ?? ''}"><input data-f="note" class="grow" placeholder="note" value="${esc(i.note)}"></div></div>
+        <div class="seg" style="flex-direction:column"><button data-up="${n}">↑</button><button data-dn="${n}">↓</button><button data-rm="${n}">✕</button></div></div>`).join('')}</div>
+      <div class="mt"><button class="b sec" id="add">+ Add activity</button></div></div>
+    <div class="row"><button class="b" id="sv">Save mode</button><button class="b sec" id="cx">Cancel</button>${m.id ? '<button class="b del" id="dl">Delete</button>' : ''}</div>
+    <div class="dim mt">Edits apply from the next day (or use "Today → Apply" to rebuild today).</div>`;
+  const grab = () => {
+    m.name = $('#mn').value; m.emoji = $('#me').value; m.color = $('#mc').value;
+    m.reward_all = +$('#r0').value; m.reward_one_x = +$('#r1').value; m.reward_two_x = +$('#r2').value;
+    $('#its').querySelectorAll('.item').forEach(el => { const it = m.items[el.dataset.n]; el.querySelectorAll('[data-f]').forEach(i => it[i.dataset.f] = i.value); });
+  };
+  $('#add').onclick = () => { grab(); m.items.push({ icon: '', title: '', start: '', minutes: '', note: '' }); editMode(); };
+  $('#its').querySelectorAll('button').forEach(b => b.onclick = () => {
+    grab(); const d = b.dataset, n = +(d.up ?? d.dn ?? d.rm);
+    if (d.rm !== undefined) m.items.splice(n, 1);
+    else { const j = d.up !== undefined ? n - 1 : n + 1; if (j >= 0 && j < m.items.length) [m.items[n], m.items[j]] = [m.items[j], m.items[n]]; }
+    editMode();
+  });
+  $('#cx').onclick = () => { editing = null; vModes(); };
+  $('#sv').onclick = async () => { grab(); await api(m.id ? 'PUT' : 'POST', m.id ? '/modes/' + m.id : '/modes', m); editing = null; toast(); show(); };
+  if (m.id) $('#dl').onclick = async () => { if (confirm('Delete this mode?')) { await api('DELETE', '/modes/' + m.id); editing = null; show(); } };
+}
+
+// ---------- Week & lists ----------
+function vWeek() {
+  const lines = a => a.join('\n');
+  $('#view').innerHTML = `<div class="card"><h2>Weekly template</h2>
+    ${DOW.map((d, i) => `<div class="row mt"><div style="width:100px">${d}</div><select data-d="${i}" class="grow">${cfg.modes.map(m => `<option value="${m.id}" ${cfg.weekdays[i] === m.id ? 'selected' : ''}>${esc(m.emoji)} ${esc(m.name)}</option>`).join('')}</select></div>`).join('')}
+    <div class="mt"><button class="b" id="wk">Save week</button></div></div>
+  <div class="card"><h2>Reward choices</h2><div class="dim">One per line: emoji then label, e.g. “📱 iPad” — what “I am working for…” shows.</div>
+    <textarea id="ch" rows="6" class="mt">${esc(lines(cfg.choices.map(c => `${c.icon} ${c.label}`.trim())))}</textarea><div class="mt"><button class="b" id="chb">Save choices</button></div></div>
+  <div class="card"><h2>ABC form options</h2><div class="dim">One per line</div>
+    ${['A', 'B', 'C'].map(k => `<div class="mt"><b>${ABC[k][0]}</b><textarea data-k="${k}" rows="6">${esc(lines(cfg.abc_options[k]))}</textarea></div>`).join('')}
+    <div class="mt"><button class="b" id="abb">Save ABC options</button></div></div>
+  <div class="card"><h2>Rules — “being in control means…”</h2><div class="dim">One per line: <code>emoji | rule | why</code>. These are what an X names.</div>
+    <textarea id="rl" rows="4" class="mt">${esc(cfg.regulation.rules.map(r => [r.icon, r.title, r.body].filter(Boolean).join(' | ')).join('\n'))}</textarea>
+    <div class="mt"><button class="b" id="rlb">Save rules</button></div></div>
+  <div class="card"><h2>Tools for big feelings</h2><div class="dim">One per line: emoji then label. Using one is what unlocks reinforcement again.</div>
+    <textarea id="tl" rows="5" class="mt">${esc(lines(cfg.regulation.tools.map(t => `${t.icon} ${t.label}`.trim())))}</textarea>
+    <div class="mt"><button class="b" id="tlb">Save tools</button></div></div>`;
+  $('#wk').onclick = async () => { const b = {}; $('#view').querySelectorAll('[data-d]').forEach(s => b[s.dataset.d] = s.value); await api('PUT', '/weekdays', b); toast(); };
+  $('#chb').onclick = async () => {
+    const choices = $('#ch').value.split('\n').map(l => l.trim()).filter(Boolean).map(l => { const m = l.match(/^(\S+)\s+(.+)$/u); return m && !/^[\w]/.test(m[1]) ? { icon: m[1], label: m[2] } : { icon: '', label: l }; });
+    await api('PUT', '/choices', { choices }); toast();
+  };
+  $('#abb').onclick = async () => { const b = {}; $('#view').querySelectorAll('[data-k]').forEach(t => b[t.dataset.k] = t.value.split('\n').map(s => s.trim()).filter(Boolean)); await api('PUT', '/abc-options', b); toast(); };
+  $('#rlb').onclick = async () => {
+    const rules = $('#rl').value.split('\n').map(l => l.trim()).filter(Boolean).map(l => { const [icon, title, body] = l.split('|').map(s => (s || '').trim()); return { icon: /^\S$/u.test(icon || '') ? icon : '', title: [icon, title].filter(Boolean).join(' ').trim(), body: body || '' }; });
+    await api('PUT', '/rules', { rules }); toast(); show();
+  };
+  $('#tlb').onclick = async () => {
+    const tools = $('#tl').value.split('\n').map(l => l.trim()).filter(Boolean).map(l => { const m = l.match(/^(\S+)\s+(.+)$/u); return m && !/^[\w]/.test(m[1]) ? { icon: m[1], label: m[2] } : { icon: '', label: l }; });
+    await api('PUT', '/tools', { tools }); toast(); show();
+  };
+}
+
+// ---------- Settings: identity, security, battery copy, rewards, protocol ----------
+async function vSettings() {
+  const tok = await api('GET', '/token');
+  $('#view').innerHTML = `
+  <div class="card"><h2>Child</h2>
+    <div class="row"><input id="setName" class="grow" maxlength="40" value="${esc(cfg.identity.child_name)}" placeholder="Shown on the kiosk and in scripts">
+      <button class="b" id="setNameBtn">Save</button></div>
+    <div class="dim mt">Leave blank for name-free wording ("Great job today!" instead of "Great job today, Sam!").</div></div>
+
+  <div class="card"><h2>Kiosk code</h2>
+    <div class="dim">The TV/iPad needs this to see the board — <code>/</code> is public, every board endpoint is not. Put it in the kiosk once and forget it.</div>
+    <div class="row mt"><code id="tok" class="grow">${esc(tok.token)}</code><button class="b sec" id="tokCopy">Copy</button></div>
+    <div class="row mt"><div class="grow"><input id="tokUrl" value="${location.origin.replace(/^http/, 'https')}?token=${esc(tok.token)}" readonly></div></div>
+    <div class="dim mt" style="font-size:13px">That URL is what you open on the kiosk (edit the host to yours; the <code>?token=</code> is saved on the device the first time). Rotating the code below signs every kiosk out at once.</div>
+    <div class="mt"><button class="b del" id="tokRotate">Rotate kiosk code</button></div></div>
+
+  <div class="card"><h2>Console password</h2>
+    <div class="row"><input id="pwNow" type="password" class="grow" placeholder="Current password" autocomplete="current-password">
+      <input id="pwNext" type="password" class="grow" placeholder="New password (8+)" autocomplete="new-password">
+      <button class="b sec" id="pwBtn">Change</button></div></div>
+
+  <div class="card"><h2>Battery bands</h2><div class="dim">Full → empty. The kiosk shows the child the band name and its line; the console uses the same words.</div>
+    ${cfg.regulation.battery.bands.map((b, i) => `<div class="row mt" style="gap:6px">
+      <input data-band="${i}" data-f="name" style="width:130px" value="${esc(b.name)}" maxlength="40">
+      <input data-band="${i}" data-f="note" class="grow" value="${esc(b.note)}" maxlength="120">
+      <input data-band="${i}" data-f="color" type="color" style="width:56px" value="${esc(b.color)}">
+      <span class="tag">${[100, 80, 60, 0][i]}%</span></div>`).join('')}
+    <div class="mt"><button class="b" id="bandsBtn">Save bands</button></div></div>
+
+  <div class="card"><h2>Reward lines</h2><div class="dim">The “how it works” strip at the bottom of the kiosk — the token economy in their words. One per line.</div>
+    <textarea id="rew" rows="4" class="mt">${esc(cfg.rewards.join('\n'))}</textarea>
+    <div class="mt"><button class="b" id="rewBtn">Save lines</button></div></div>
+
+  <div class="card"><h2>Protocol</h2>
+    <div class="dim">What the console walks you through. The kiosk and the one-tap behavior log both follow these.</div>
+    <div class="mt"><small class="dim">Check-in interval (minutes)</small><input id="pMin" type="number" min="10" max="480" style="width:110px" value="${cfg.regulation.check_in.every_minutes}"></div>
+    <div class="mt"><small class="dim">Proactive — before anything happens (one per line)</small><textarea id="pPro" rows="5">${esc(cfg.regulation.protocol.proactive.join('\n'))}</textarea></div>
+    <div class="mt"><small class="dim">If behaviors occur (one per line)</small><textarea id="pBeh" rows="5">${esc(cfg.regulation.protocol.behavior.join('\n'))}</textarea></div>
+    <div class="mt"><small class="dim">Hold the line</small><textarea id="pHold" rows="2">${esc(cfg.regulation.protocol.hold)}</textarea></div>
+    <div class="mt"><small class="dim">Script with a named rule (<code>{name}</code>, <code>{rule}</code>)</small><textarea id="pSr" rows="2">${esc(cfg.regulation.protocol.script_rule)}</textarea></div>
+    <div class="mt"><small class="dim">Script without one (<code>{name}</code>)</small><textarea id="pS" rows="2">${esc(cfg.regulation.protocol.script)}</textarea></div>
+    <div class="mt"><button class="b" id="pBtn2">Save protocol</button></div></div>`;
+  $('#setNameBtn').onclick = async () => { await api('PUT', '/identity', { child_name: $('#setName').value }); toast(); };
+  $('#tokCopy').onclick = async () => { await navigator.clipboard.writeText(tok.token); toast('Copied'); };
+  $('#tokRotate').onclick = async () => {
+    if (!confirm('Rotate the kiosk code? Every kiosk must be given the new code.')) return;
+    const out = await api('POST', '/token/rotate', {});
+    $('#tok').textContent = out.token;
+    $('#tokUrl').value = location.origin.replace(/^http/, 'https') + '?token=' + out.token;
+    toast('New code set');
+  };
+  $('#pwBtn').onclick = async () => {
+    try { await api('POST', '/password', { current: $('#pwNow').value, next: $('#pwNext').value }); $('#pwNow').value = $('#pwNext').value = ''; toast('Password changed'); } catch {}
+  };
+  $('#bandsBtn').onclick = async () => {
+    const bands = cfg.regulation.battery.bands.map((b, i) => ({
+      name: $(`[data-band="${i}"][data-f=name]`).value, note: $(`[data-band="${i}"][data-f=note]`).value, color: $(`[data-band="${i}"][data-f=color]`).value }));
+    await api('PUT', '/bands', { bands }); toast();
+  };
+  $('#rewBtn').onclick = async () => { await api('PUT', '/rewards', { lines: $('#rew').value.split('\n').map(s => s.trim()).filter(Boolean) }); toast(); };
+  $('#pBtn2').onclick = async () => {
+    await api('PUT', '/protocol', {
+      checkin_minutes: +$('#pMin').value,
+      proactive: $('#pPro').value.split('\n').map(s => s.trim()).filter(Boolean),
+      behavior: $('#pBeh').value.split('\n').map(s => s.trim()).filter(Boolean),
+      hold: $('#pHold').value, script_rule: $('#pSr').value, script: $('#pS').value,
+    }); toast();
+  };
+}
+
+// ---------- Battery & check-in: the caregiver protocol, as buttons ----------
+let cf = { hunger: 0, boredom: 0, house: 0 }, behSel = new Set();
+const previewRisk = () => {
+  const pts = [0, .33, .66, 1], tot = cfg.regulation.factors.reduce((s, f) => s + Math.round(f.weight * pts[cf[f.key]]), 0);
+  return { tot, band: cfg.regulation.bands.find(b => tot < b.max), pts };
+};
+function vBattery() {
+  const r = cfg.regulation, b = r.battery, p = r.pause, ci = r.check_in, pr = previewRisk();
+  $('#view').innerHTML = `
+  <div class="card"><h2>Battery</h2>
+    <div class="row"><div class="grow"><div class="big" style="font-size:24px;color:${b.band.color}">${esc(b.band.name)} <span class="tag">${b.lines}/${b.max}</span></div>
+      <div class="dim">${esc(b.band.note)}</div>
+      <div class="row mt" style="gap:4px">${Array.from({ length: b.max }, (_, i) => `<div style="flex:1;height:14px;border-radius:4px;background:${i < b.lines ? b.band.color : 'var(--line)'}"></div>`).join('')}</div></div>
+      <div><button class="b sec" id="bdown">− line</button><div class="mt"><button class="b sec" id="bup">+ line</button></div></div></div>
+    <div class="dim mt">${r.battery_events.length ? 'Today — ' + r.battery_events.slice(0, 8).map(e => `${e.ts.slice(11, 16)} ${e.delta > 0 ? '+' : ''}${e.delta}${e.reason ? ' (' + esc(e.reason) + ')' : ''}`).join(' · ') : 'No battery moves yet today.'}</div>
+  </div>
+
+  <div class="card"><h2>Behavior just happened</h2>
+    <div class="dim">One tap runs the protocol's procedure: ABC entry, a line off the battery, reinforcement paused, and the script to say out loud.</div>
+    <div class="row mt"><select id="brule" class="grow"><option value="">Which rule? (optional)</option>
+      ${r.rules.map(x => `<option value="${x.id}">${esc(x.icon)} ${esc(x.title)}</option>`).join('')}</select>
+      <select id="bsev" style="width:140px"><option value="1">severity 1</option><option value="2">2</option><option value="3" selected>severity 3</option><option value="4">4</option><option value="5">5</option></select></div>
+    <div class="pills mt" id="bpill">${cfg.abc_options.B.map(o => `<button class="pill ${behSel.has(o) ? 'on' : ''}" data-o="${esc(o)}">${esc(o)}</button>`).join('')}</div>
+    <div class="mt"><button class="b del" id="bgo">Log it — run the protocol</button></div>
+    <div id="bout"></div>
+  </div>
+
+  <div class="card"><h2>Reinforcement</h2>
+    ${p.active
+      ? `<div><b style="color:var(--bad)">Paused</b> <span class="tag">${esc(p.reason || 'behavior')}</span>
+          <span class="dim">${p.mins} min ago${p.until ? ', until ' + esc(String(p.until).slice(11, 16)) : ''}</span></div>
+        <div class="dim mt">Tool used since the pause: ${p.tool_used ? '✅' : '—'} · Check-in since the pause: ${p.checked_in ? '✅' : '—'}</div>
+        ${p.resume_ready ? `<div class="mt" style="color:var(--ok)"><b>${esc(r.resume_note)}</b></div>` : '<div class="dim mt">The protocol: reinforcement resumes after a check-in <b>and</b> using a tool.</div>'}
+        <div class="row mt"><input id="rest" type="number" min="0" value="1" style="width:90px" title="lines to restore"><button class="b" id="resBtn">Back to baseline → resume</button></div>`
+      : `<div class="dim">Running. Pause it when a behavior happens (or use the button above).</div>
+        <div class="row mt"><input id="pr" class="grow" placeholder="Reason — usually the rule"><input id="pm" type="number" min="0" style="width:90px" placeholder="min"><button class="b sec" id="pBtn">Pause reinforcement</button></div>`}
+  </div>
+
+  <div class="card"><h2>Check-in
+      ${ci.due ? `<span class="tag" style="background:var(--bad);color:#2b0707">${ciDue(ci)}</span>` : ci.last ? `<span class="tag" style="background:var(--ok);color:#06281b">on schedule</span>` : ''}</h2>
+    <div class="dim">${ci.last ? `Last: ${esc(String(ci.last.ts).slice(5, 16))} · ${ci.mins_since} min ago` : 'No check-in on record yet.'} · today ${ci.today} of ~${ci.expected_today}</div>
+    ${r.has_check_in ? `<div class="mt">Right now: risk <b style="color:${r.risk.band.color}">${r.risk.total} · ${esc(r.risk.band.name)}</b>
+      <span class="dim">${esc(r.risk.band.action)}</span></div>` : ''}
+    <div class="dim mt">Protocol: check in every ${ci.every_minutes} minutes — review the battery, engage in a preferred activity, catch good behavior.</div>
+    ${r.factors.map(f => `<div class="mt"><b>${f.icon} ${esc(f.label)}</b> <span class="dim" id="lbl-${f.key}">${esc(f.levels[cf[f.key]])}</span>
+      <div class="seg mt" style="gap:4px">${f.levels.map((lv, i) => `<button data-f="${f.key}" data-v="${i}" class="${cf[f.key] === i ? 'on ok' : ''}" style="flex:1;min-width:0;font-size:13px">${i} · ${esc(lv)}</button>`).join('')}</div></div>`).join('')}
+    <div class="mt"><small class="dim">Note</small><input id="cnote" placeholder="optional"></div>
+    <div class="mt"><small class="dim">This check-in</small></div>
+    <div class="row mt"><div class="grow"><b id="riskPrev">Risk ${pr.tot}</b> <span id="riskBand" class="tag" style="background:${pr.band.color};color:#06121f">${esc(pr.band.name)}</span>
+      <div id="riskAct" class="dim" style="font-size:13px">${esc(pr.band.action)}</div></div>
+      <button class="b" id="ciBtn">Save check-in</button></div>
+  </div>
+
+  <div class="card"><h2>Proactive — before anything happens</h2><ol class="dim" style="margin:0;padding-left:20px">${r.protocol.proactive.map(s => `<li>${esc(s)}</li>`).join('')}</ol>
+    <h2 class="mt">If behaviors occur</h2><ol class="dim" style="margin:0;padding-left:20px">${r.protocol.behavior.map(s => `<li>${esc(s)}</li>`).join('')}</ol>
+    <div class="mt" style="color:var(--star)">💬 “${esc(r.script)}”</div><div class="dim mt">${esc(r.protocol.hold)}</div></div>`;
+  $('#bdown').onclick = async () => { await api('POST', '/battery', { delta: -1, reason: 'manual' }); show(); };
+  $('#bup').onclick = async () => { await api('POST', '/battery', { delta: 1, reason: 'manual' }); show(); };
+  $('#bpill').querySelectorAll('.pill').forEach(x => x.onclick = () => { behSel.has(x.dataset.o) ? behSel.delete(x.dataset.o) : behSel.add(x.dataset.o); x.classList.toggle('on'); });
+  $('#bgo').onclick = async () => {
+    const out = await api('POST', '/behavior', { rule_id: $('#brule').value || null, severity: +$('#bsev').value, behaviors: [...behSel] });
+    behSel = new Set();
+    $('#bout').innerHTML = `<div class="mt" style="color:var(--star)">💬 Say: “${esc(out.script)}”</div>
+      <ol class="dim mt" style="margin:0;padding-left:20px">${out.next.map(s => `<li>${esc(s)}</li>`).join('')}</ol>
+      <div class="dim mt">${esc(out.hold)}</div>`;
+    cfg.regulation = await api('GET', '/regulation'); stat();
+    toast('Protocol ran');
+  };
+  const pBtn = $('#pBtn'); if (pBtn) pBtn.onclick = async () => { await api('POST', '/pause', { reason: $('#pr').value, minutes: $('#pm').value || null }); show(); };
+  const resBtn = $('#resBtn'); if (resBtn) resBtn.onclick = async () => { await api('POST', '/resume', { restore: +$('#rest').value }); show(); };
+  $('#view').querySelectorAll('.seg button[data-f]').forEach(btn => btn.onclick = () => {
+    cf[btn.dataset.f] = +btn.dataset.v;
+    const f = cfg.regulation.factors.find(x => x.key === btn.dataset.f);
+    btn.parentElement.querySelectorAll('button').forEach(b => b.classList.toggle('on', b === btn));
+    $('#lbl-' + f.key).textContent = f.levels[cf[f.key]];
+    const pr2 = previewRisk();
+    $('#riskPrev').textContent = 'Risk ' + pr2.tot;
+    $('#riskBand').textContent = pr2.band.name; $('#riskBand').style.background = pr2.band.color;
+    $('#riskAct').textContent = pr2.band.action;
+  });
+  $('#ciBtn').onclick = async () => {
+    await api('POST', '/checkins', { ...cf, note: $('#cnote').value });
+    cf = { hunger: 0, boredom: 0, house: 0 }; toast('Check-in saved'); show();
+  };
+}
+
+// ---------- Patterns ----------
+let riskDays = 30;
+async function vRisk() {
+  const s = await api('GET', '/risk?days=' + riskDays);
+  const bars = (vals, color, fmt) => `<div class="row" style="align-items:flex-end;gap:2px;height:70px">${vals.map((v, i) => `<div title="${i}:00 — ${fmt ? fmt(v) : v}" style="flex:1;background:${color};height:${v ? Math.max(3, v * 100) : 1}px;min-height:${v ? 3 : 1}px;opacity:${v ? 1 : .22}"></div>`).join('')}</div>`;
+  const tally = (rows, label) => `<div class="mt"><b>${label}</b>${rows.map(([k, n]) => `<div class="mt" style="margin-top:4px"><div class="row"><span class="grow">${esc(k)}</span><b>${n}</b></div><div class="bar" style="width:${Math.max(4, n / Math.max(1, ...rows.map(r => r[1])) * 100)}%"></div></div>`).join('') || '<div class="dim">No data.</div>'}</div>`;
+  const tl = s.timeline, W = 600, H = 150;
+  const xy = tl.map((p, i) => [10 + (W - 20) * (tl.length < 2 ? 0 : i / (tl.length - 1)), H - 10 - (H - 20) * p.total / 100]);
+  $('#view').innerHTML = `
+  <div class="card"><h2>Blowup risk — last ${s.days} days</h2>
+    <div class="row">${[7, 30, 90].map(d => `<button class="b sec" data-d="${d}" style="${d === riskDays ? 'background:var(--accent)' : ''}">${d}d</button>`).join('')}</div>
+    <div class="mt">${tl.length ? `<svg viewBox="0 0 ${W} ${H}" style="width:100%;background:#0f1226;border-radius:8px">
+      ${[25, 50, 75].map(t => `<line x1="0" x2="${W}" y1="${H - 10 - (H - 20) * t / 100}" y2="${H - 10 - (H - 20) * t / 100}" stroke="#2b3162" stroke-dasharray="4 4"/>`).join('')}
+      <polyline fill="none" stroke="var(--accent)" stroke-width="2" points="${xy.map(p => p.join(',')).join(' ')}"/>
+      ${xy.map((p, i) => `<circle cx="${p[0]}" cy="${p[1]}" r="3" fill="${cfg.regulation.bands.find(b => tl[i].total < b.max).color}"/>`).join('')}</svg>`
+      : '<div class="dim">No check-ins yet — the risk line starts when you log them.</div>'}</div>
+    <div class="dim mt">${tl.length ? `${tl.length} check-ins · average risk ${s.checkins.avg_risk ?? '—'} · dashed lines are the Low / Elevated / High bands` : ''}</div>
+  </div>
+  <div class="card"><h2>What precedes a blowup</h2>
+    ${s.pre_behavior ? `<table><tr><th></th><th>2h before a behavior</th><th>Baseline</th><th>Difference</th></tr>
+      ${cfg.regulation.factors.map(f => `<tr><td>${f.icon} ${esc(f.label)}</td><td>${s.pre_behavior[f.key]}</td><td>${s.baseline[f.key]}</td>
+        <td style="color:${s.deltas[f.key] > .2 ? 'var(--bad)' : 'var(--dim)'}">${s.deltas[f.key] > 0 ? '+' : ''}${s.deltas[f.key]}</td></tr>`).join('')}</table>
+      <div class="dim mt">Read it as: “${esc(s.deltas.hunger > .2 ? 'hunger runs hot before a blowup' : s.deltas.boredom > .2 ? 'boredom runs hot before a blowup' : 'nothing stands out yet')}” (${s.pre_behavior.samples} samples).</div>`
+      : '<div class="dim">Needs a check-in in the 2 hours before a logged behavior. Log both and this finds the pattern.</div>'}</div>
+  </div>
+  <div class="card"><h2>When it happens</h2>
+    <b>Average risk by hour</b>${bars((s.by_hour || []).map(h => h.avg == null ? 0 : h.avg / 100), 'var(--accent)', v => Math.round(v * 100))}
+    <b class="mt">Behaviors by hour</b>${bars((s.behavior_by_hour || []).map(n => s.behaviors.count ? n / s.behaviors.count : 0), 'var(--bad)')}
+    <div class="row dim" style="justify-content:space-between;font-size:11px"><span>12a</span><span>6a</span><span>12p</span><span>6p</span><span>11p</span></div>
+    ${s.peak_hour != null ? `<div class="mt">Peak hour: <b>${s.peak_hour % 12 || 12}${s.peak_hour >= 12 ? 'p' : 'a'}</b> — plan food/engagement around it.</div>` : ''}
+  </div>
+  <div class="card"><h2>Blowups & tools</h2>
+    <div class="row"><div class="grow"><div class="big">${s.behaviors.days_since == null ? '—' : s.behaviors.days_since}</div><span class="dim">days since a logged behavior · ${s.behaviors.count} in ${s.days}d</span></div>
+      <div class="grow"><div class="big">${s.tool_uses.reduce((a, t) => a + t.n, 0)}</div><span class="dim">tool uses</span></div></div>
+    ${tally(s.rule_breaks.map(r => [`${r.icon || ''} ${r.title}`, r.n]), 'Rules that got an X')}
+    ${tally(s.tool_uses.map(t => [`${t.icon || ''} ${t.label}`, t.n]), 'Tools used')}
+  </div>
+  <div class="card"><h2>What sets them off → what they do</h2>${tally(s.top_combos, 'Antecedent → behavior')}
+    ${tally(s.top_behaviors, 'Behaviors')}${tally(s.top_antecedents, 'Antecedents')}</div>`;
+  $('#view').querySelectorAll('[data-d]').forEach(b => b.onclick = () => { riskDays = +b.dataset.d; vRisk(); });
+}
+
+// ---------- History ----------
+async function vHistory() {
+  const [h, abc] = await Promise.all([api('GET', '/history'), api('GET', '/abc?days=30')]);
+  const s = abc.summary, bar = (arr, tot) => arr.map(([k, n]) => `<div class="mt"><div class="row"><span class="grow">${esc(k)}</span><b>${n}</b></div><div class="bar" style="width:${Math.max(4, n / tot * 100)}%"></div></div>`).join('') || '<div class="dim">No data.</div>';
+  const max = Math.max(1, ...s.byHour);
+  $('#view').innerHTML = `<div class="card"><h2>Behavior — last 30 days (${s.total} entries)</h2>
+    <b>Antecedents</b>${bar(s.antecedents, s.total || 1)}<div class="mt"><b>Behaviors</b></div>${bar(s.behaviors, s.total || 1)}<div class="mt"><b>Consequences</b></div>${bar(s.consequences, s.total || 1)}
+    <div class="mt"><b>By hour of day</b></div><div class="row" style="align-items:flex-end;gap:2px;height:70px">${s.byHour.map((n, i) => `<div title="${i}:00 — ${n}" style="flex:1;background:var(--accent);height:${n / max * 100}%;min-height:${n ? 3 : 1}px;opacity:${n ? .25 : .25}"></div>`).join('')}</div>
+    <div class="row dim" style="justify-content:space-between;font-size:11px"><span>12a</span><span>6a</span><span>12p</span><span>6p</span><span>11p</span></div></div>
+    ${abcList(abc.events, 'All entries')}
+    <div class="card"><h2>Daily scores</h2><table><tr><th>Date</th><th>Mode</th><th>✓</th><th>X</th><th>Min</th><th>For</th></tr>
+    ${h.map(d => `<tr><td>${d.date.slice(5)}</td><td>${esc(d.mode)}</td><td>${d.reward.checks}</td><td>${d.reward.xs}</td><td>${d.reward.final ? d.reward.minutes : '…'}</td><td>${esc(d.working_for)}</td></tr>`).join('')}</table></div>`;
+  wireDel();
+}
+
+// ---------- boot: figure out who is on the other side of the glass ----------
+(async function boot() {
+  let me, status;
+  try {
+    const r = await fetch('/api/admin/me', { credentials: 'same-origin' });
+    status = r.status; me = await r.json();
+  } catch { return; }
+  if (status === 200 && me.setup) { showAuth(); return; }
+  if (status === 401) { showAuth(); return; }
+  show();
+})();
+</script>
+</body>
+</html>

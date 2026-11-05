@@ -1,0 +1,23 @@
+{
+  "name": "behavior-dashboard",
+  "version": "0.1.0",
+  "description": "Self-hosted behavior board: the kiosk your child taps, the console your protocol runs on. One app, one family, zero dependencies.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "license": "MIT",
+  "keywords": [
+    "aba",
+    "behavior",
+    "autism",
+    "kiosk",
+    "self-hosted",
+    "schedule",
+    "token-economy"
+  ]
+}

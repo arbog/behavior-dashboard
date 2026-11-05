@@ -1,0 +1,27 @@
+# Self-host in one command:
+#   docker compose up -d
+# First visit: open http://HOST:8080/admin and create the console password.
+#
+# Two things to decide:
+#   1. ports: bound to 127.0.0.1 below — the board works from the machine that
+#      runs it out of the box. To serve it to the family TV/iPad on your LAN,
+#      bind to 0.0.0.0 (and use a strong admin password + kiosk code). To serve
+#      it to the internet, put TLS in front (Caddy/nginx/Cloudflare Tunnel) —
+#      see docs/self-hosting.md.
+#   2. ADMIN_PASSWORD: uncomment to provision non-interactively (PaaS, CI).
+#      If set, the first-run setup screen is skipped and /admin asks for it.
+services:
+  board:
+    # Local build:  docker build -t behavior-dashboard . && swap the image
+    image: ghcr.io/arbog/behavior-dashboard:latest
+    ports:
+      - "127.0.0.1:8080:3000"
+    environment:
+      - TZ=${TZ:-UTC}
+      # - ADMIN_PASSWORD=${ADMIN_PASSWORD:?set ADMIN_PASSWORD}
+    volumes:
+      - board-data:/data
+    restart: unless-stopped
+
+volumes:
+  board-data:

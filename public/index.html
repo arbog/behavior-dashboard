@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Behavior Board</title>
+<style>
+  :root { --bg:#0f1226; --card:#1a1f3d; --card2:#171b37; --line:#2b3162; --hi:rgba(255,255,255,.07); --text:#f4f6ff; --dim:#98a0d0; --accent:#4f8cff;
+          --ok:#34d399; --bad:#f87171; --star:#fbbf24;
+          /* one rhythm for the whole screen: every card, seam, gap and heading comes
+             out of these five, so nothing on screen is a one-off size */
+          --shadow:0 .5vmin 1.6vmin rgba(4,6,20,.45);
+          --gap:.7vmin; --pad:.85vmin 1.5vmin; --r:2vmin; --bw:.35vmin; --hd:1.8vmin; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; user-select: none; }
+  html, body { margin:0; height:100%; color:var(--text);
+    /* a little light from the top, so the screen has a place the eye lands first */
+    background:radial-gradient(120vmax 70vmax at 50% -12%, #1f2554 0%, rgba(31,37,84,0) 60%), var(--bg);
+    background-attachment:fixed;
+    font-family: system-ui, "Segoe UI", Roboto, sans-serif; overflow:hidden; }
+  /* five bands (header / battery+rules / day / week / footer) plus the banner slot.
+     Dense on purpose: a 1366x768 kiosk never scrolls. */
+  /* Every band but the day is sized by its content: only the schedule flexes, and
+     because its rows and type are derived from the height it ends up with, nothing
+     is ever clipped — a long day gives up point size, never an item. */
+  #app { height:100%; display:grid;
+    grid-template-rows:min-content min-content minmax(0,1fr) min-content min-content min-content;
+    gap:var(--gap); padding:calc(var(--gap) + .4vmin); min-height:0; }
+  .strip { display:grid; grid-template-columns:1fr 1.25fr; gap:var(--gap); min-height:0; }
+  main { display:grid; grid-template-columns:1.1fr 1fr; gap:var(--gap); min-height:0; }
+  footer { display:grid; grid-template-columns:1.25fr 1.15fr 1fr; gap:var(--gap); min-height:0; }
+  .card { background:linear-gradient(180deg, var(--card) 0%, var(--card2) 100%);
+    border:var(--bw) solid var(--line); border-radius:var(--r);
+    box-shadow:inset 0 .12vmin 0 var(--hi), var(--shadow);
+    padding:var(--pad); min-height:0; min-width:0; overflow:hidden; }
+  .hd { margin:0; font-size:var(--hd); color:#a9b1e0; font-weight:800;
+    letter-spacing:.13em; text-transform:uppercase; line-height:1.1; }
+  /* the clock gets its own middle track, so it is centred however long the day's
+     name is (flex space-between left it off-centre on a trip day) */
+  header { display:grid; grid-template-columns:1fr auto 1fr; align-items:center; gap:2vmin; padding:0 .6vmin; }
+  .mode { justify-self:start; font-size:3.1vmin; font-weight:800; padding:.55vmin 2vmin;
+    border-radius:99px; background:var(--accent); color:#fff; white-space:nowrap;
+    box-shadow:inset 0 .2vmin 0 rgba(255,255,255,.28), inset 0 -.4vmin .8vmin rgba(0,0,0,.18), 0 .6vmin 1.8vmin rgba(0,0,0,.35);
+    text-shadow:0 .15vmin .3vmin rgba(0,0,0,.25);
+    min-width:0; max-width:100%; overflow:hidden; text-overflow:ellipsis; }
+  .clock { font-size:5vmin; font-weight:800; font-variant-numeric:tabular-nums; line-height:1;
+    letter-spacing:.01em; text-shadow:0 0 2.4vmin rgba(120,160,255,.35); }
+  .date { justify-self:end; text-align:right; font-size:2.1vmin; color:var(--dim); line-height:1.15; }
+  /* ---- now, and the schedule ---- */
+  .now { display:flex; flex-direction:column; align-items:center; justify-content:center;
+    text-align:center; gap:.8vmin; padding:1vmin; }
+  .now { background:radial-gradient(60% 70% at 50% 38%, rgba(79,140,255,.16) 0%, rgba(79,140,255,0) 100%),
+      linear-gradient(180deg, var(--card) 0%, var(--card2) 100%); }
+  .now .hd { padding:.35vmin 1.4vmin; margin:-.35vmin 0; border-radius:99px; background:rgba(79,140,255,.14); color:#b9ceff; }
+  .now .icon { font-size:8vmin; line-height:1; filter:drop-shadow(0 .8vmin 1vmin rgba(0,0,0,.4)); }
+  .now .title { font-size:4.4vmin; font-weight:800; line-height:1.1; max-width:100%;
+    display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2;
+    overflow:hidden; text-overflow:ellipsis; }   /* a two-line title, never a third */
+  .now .meta { font-size:2.1vmin; color:var(--dim); }
+  /* A nine-item day plus a banner is the tallest a day ever gets, and then the strip
+     is thin. The Now card gives up its big icon first — the words are the thing. */
+  .now.tight { gap:.9vmin; padding:1vmin 1.4vmin; }
+  .now.tight .title { font-size:4.2vmin; line-height:1.05; }
+  .now.tight .meta { font-size:2vmin; }
+  .now.tight .big { font-size:3.2vmin; padding:1vmin 3vmin; max-width:40vmin; }
+  .big { font-size:4vmin; font-weight:800; border:0; border-radius:var(--r); padding:1.4vmin 5vmin;
+    background:linear-gradient(180deg, #4be3ae 0%, var(--ok) 55%, #26b887 100%); color:#06281b; width:100%; max-width:46vmin;
+    box-shadow:inset 0 .25vmin 0 rgba(255,255,255,.4), 0 .7vmin 0 #1b8c68, 0 1.2vmin 2.2vmin rgba(52,211,153,.28);
+    transition:transform .08s, box-shadow .08s; }
+  .big:active { transform:translateY(.5vmin); box-shadow:inset 0 .25vmin 0 rgba(255,255,255,.4), 0 .2vmin 0 #1b8c68, 0 .4vmin 1vmin rgba(52,211,153,.2); }
+  .done .icon { color:var(--star); filter:drop-shadow(0 0 1.6vmin rgba(251,191,36,.55)); }
+  .list { padding:0; display:flex; flex-direction:column; }
+  /* head and rows share one grid: the time column and the two mark columns line up
+     all the way down the list */
+  .list .head, .row { display:grid; grid-template-columns:minmax(0,1fr) 6vmin 9vmin 9vmin;
+    align-items:center; gap:1.1vmin; padding:0 1.5vmin; }
+  .list .head { padding-top:.5vmin; padding-bottom:.3vmin; border-bottom:var(--bw) solid var(--line); flex:none; }
+  .list .head span { font-size:1.55vmin; color:var(--dim); font-weight:800; line-height:1.12; text-align:center; }
+  .list .head span:first-child { text-align:left; font-size:var(--hd); letter-spacing:.13em; text-transform:uppercase; }
+  /* The day fills the card it sits in and never scrolls: nobody scrolls a kiosk,
+     so an item below the fold may as well not be on the board. Rows share the
+     height equally and their type is sized from the row itself (cqh), which is
+     what keeps a nine-item day on screen — smaller, not hidden. The plain vmin
+     sizes first are the fallback for a browser without container queries. */
+  .rows { flex:1; display:flex; flex-direction:column; min-height:0; overflow:hidden; container-type:size; }
+  .row { flex:1 1 0; min-height:0; overflow:hidden; border-bottom:var(--bw) solid var(--line); }
+  .row:last-child { border-bottom:0; }
+  .row .t { font-size:3.2vmin; font-size:min(3.2vmin, calc(44cqh / var(--n,6)));
+    font-weight:700; display:flex; gap:1.2vmin; align-items:center; min-width:0; line-height:1.1; }
+  .row .t .ic { flex:none; width:4vmin; width:min(4vmin, calc(52cqh / var(--n,6))); text-align:center; }
+  .row .t .tx { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .row .tm { justify-self:end; font-size:2.1vmin; font-size:min(2.1vmin, calc(29cqh / var(--n,6)));
+    color:var(--dim); font-weight:600; font-variant-numeric:tabular-nums; }
+  .row.cur { background:linear-gradient(90deg, rgba(79,140,255,.26) 0%, rgba(79,140,255,.08) 100%);
+    box-shadow:inset .5vmin 0 0 var(--accent); }
+  .row.cur .tx { text-shadow:0 0 1.6vmin rgba(120,160,255,.4); }
+  .mark { font-size:4.6vmin; font-size:min(4.6vmin, calc(56cqh / var(--n,6))); text-align:center; font-weight:800; }
+  .mark .pend { width:.5em; height:.5em; border-width:.055em; }
+  .ok { color:var(--ok); text-shadow:0 0 1.2vmin rgba(52,211,153,.45); }
+  .no { color:var(--bad); } .turn { color:var(--star); text-shadow:0 0 1.2vmin rgba(251,191,36,.45); }
+  /* an empty box says "not yet" as a ring; a dot in the seam colour just vanished */
+  .pend { display:inline-block; width:1.5vmin; height:1.5vmin; border-radius:50%;
+    border:.32vmin solid var(--dim); opacity:.55; vertical-align:middle; }
+  /* ---- the week ahead — counting days by looking, so show them ---- */
+  .cal { display:flex; gap:var(--gap); min-height:0; }
+  .cal .d { flex:1; background:linear-gradient(180deg, var(--card) 0%, var(--card2) 100%);
+    border:var(--bw) solid var(--line); border-radius:var(--r); box-shadow:inset 0 .12vmin 0 var(--hi);
+    padding:.3vmin .5vmin; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:.05vmin; min-width:0; }
+  .cal .d b { font-size:1.25vmin; color:var(--dim); font-weight:800; letter-spacing:.08em; text-transform:uppercase; }
+  .cal .d span { font-size:1.6vmin; font-weight:700; max-width:100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .cal .d .nm { font-style:normal; }
+  .cal .d.on { background:linear-gradient(180deg, rgba(79,140,255,.34) 0%, rgba(79,140,255,.16) 100%);
+    border-color:var(--accent); box-shadow:inset 0 .12vmin 0 rgba(255,255,255,.12), 0 0 2vmin rgba(79,140,255,.3); }
+  .cal .d.on b { color:var(--accent); }
+  .cal .d.past { opacity:.45; }
+  /* ---- battery, rules, tools, paused fun ---- */
+  .batt { display:flex; flex-direction:column; gap:.5vmin; }
+  .batt .row1 { display:flex; align-items:center; gap:1.6vmin; min-width:0; }
+  .batt .name { font-size:2.5vmin; font-weight:800; white-space:nowrap; }
+  .segs { display:flex; gap:.7vmin; flex:1; min-width:0; }
+  .segs i { flex:1; height:2.2vmin; border-radius:.7vmin; background:#11152c; border:var(--bw) solid var(--line);
+    box-shadow:inset 0 .3vmin .6vmin rgba(0,0,0,.35); }
+  .segs i[style*="background"] { box-shadow:inset 0 .25vmin 0 rgba(255,255,255,.3), 0 0 1.4vmin rgba(255,255,255,.12); }
+  .batt .cap { font-size:1.6vmin; color:var(--dim); white-space:nowrap; }
+  .rules { display:flex; flex-direction:column; gap:.35vmin; }
+  .rules ol { margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:.3vmin; overflow:hidden; min-width:0; }
+  .rules li { font-size:1.85vmin; font-weight:700; line-height:1.18; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .rules li small { font-weight:500; color:var(--dim); font-size:1.65vmin; }
+  /* the banner keeps its slot even when there is nothing to say, so a pause that
+     shows up on the next poll doesn't reflow the whole screen */
+  .banner { border-radius:var(--r); padding:.6vmin 2vmin; min-height:3.2vmin; display:flex; align-items:center;
+    justify-content:center; text-align:center; font-size:2.1vmin; font-weight:700;
+    background:#3a1c2a; border:var(--bw) solid #6b2b41; color:#ffd9e4;
+    overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+  .banner { box-shadow:inset 0 .12vmin 0 var(--hi), var(--shadow); }
+  .banner.ready { background:#16352a; border-color:#2b6b50; color:#d6ffe9; }
+  .banner.plan { background:#13244a; border-color:#2f5697; color:#dbeaff; }
+  .banner.hollow { visibility:hidden; }
+  /* ---- footer: what they're working for, their tools, what they've earned ---- */
+  .choice, .tools { display:flex; flex-direction:column; justify-content:center; gap:.6vmin; }
+  .chips { display:flex; flex-wrap:wrap; gap:.45vmin; }
+  .chip { font-size:2.2vmin; font-weight:700; padding:.6vmin 1.5vmin; border-radius:99px;
+    border:var(--bw) solid #3a4180; background:rgba(255,255,255,.04); color:var(--text);
+    box-shadow:inset 0 .12vmin 0 var(--hi); transition:transform .08s; }
+  .chip:active { transform:scale(.95); }
+  .chip.sel { background:linear-gradient(180deg, #ffd35a 0%, var(--star) 100%); color:#33260a; border-color:var(--star);
+    box-shadow:inset 0 .2vmin 0 rgba(255,255,255,.45), 0 0 1.8vmin rgba(251,191,36,.35); }
+  .tools .chip { font-size:1.75vmin; padding:.35vmin .9vmin; }
+  .tools .chip.used { border-color:var(--ok); color:var(--ok); background:rgba(52,211,153,.1); }
+  /* the reward lines are a strip under the cards so they read all at once */
+  .why { grid-column:1/-1; display:grid; grid-template-columns:repeat(4,1fr); gap:1.2vmin;
+    font-size:1.15vmin; color:var(--dim); line-height:1.15; padding:0 .4vmin;
+    min-height:1.6vmin;    /* one line, and never the 1px the grid shaves off it */
+    overflow:hidden; align-content:start; }
+  .why div { padding-left:1.2vmin; text-indent:-1.2vmin; }   /* hanging indent: wrapped lines line up */
+  .earn { display:flex; flex-direction:column; justify-content:center; gap:.4vmin; }
+  .earn .amt { display:flex; align-items:baseline; gap:1vmin; }
+  .earn .min { font-size:7vmin; font-weight:900; line-height:1; font-variant-numeric:tabular-nums;
+    background:linear-gradient(180deg, #ffffff 20%, #b9c6ff 100%); -webkit-background-clip:text; background-clip:text;
+    color:transparent; -webkit-text-fill-color:transparent; }
+  .earn .min small { font-size:2.4vmin; font-weight:600; color:var(--dim); -webkit-text-fill-color:var(--dim); }
+  .earn .tier { font-size:2.4vmin; font-weight:800; }
+  .tier.all { color:var(--ok); } .tier.one { color:var(--star); } .tier.two { color:var(--bad); }
+  .proj { font-size:1.8vmin; color:var(--dim); font-weight:500; }
+  /* ---- token gate: shown until the board's kiosk token is saved ---- */
+  #gate { position:fixed; inset:0; z-index:9; display:flex; align-items:center; justify-content:center;
+    background:rgba(10,12,28,.92); }
+  #gate[hidden] { display:none; }
+  #gate .card { width:44vmin; max-width:90vw; text-align:center; gap:2vmin; display:flex; flex-direction:column; align-items:center; }
+  #gate h2 { font-size:3.4vmin; margin:0; font-weight:800; }
+  #gate .sub { font-size:1.9vmin; color:var(--dim); }
+  #gate input { font-size:2.4vmin; padding:1.4vmin; width:100%; text-align:center; letter-spacing:.05em;
+    background:#0f1226; color:var(--text); border:.35vmin solid var(--line); border-radius:1.2vmin; }
+  #gate .big { margin-top:1vmin; }
+  @media (orientation: portrait) {
+    .strip, main { grid-template-columns:1fr; }
+    main { grid-template-rows:auto 1fr; }
+    footer { grid-template-columns:1fr 1fr; }
+    /* seven days across 768px: the mode name on every one of them does not fit,
+       and truncation loses the point. The emoji and the colour say it — a real
+       plan ("Beach Day") is the one name worth the words. */
+    .cal .d .nm { display:none; }
+    .cal .d.plan .nm { display:inline; }
+    .cal .d span { font-size:1.7vmin; }
+    .cal .d b { font-size:1.35vmin; }
+    /* the pause script is a sentence, not a headline — let it use two lines */
+    .banner { white-space:normal; line-height:1.2; }
+    .now .icon { font-size:7vmin; } .now .title { font-size:4.2vmin; }
+    /* 768 wide: two rules per row, one line each, instead of four cramped columns */
+    .why { grid-template-columns:repeat(2,1fr); }
+    /* choice + tools take the two columns; earned time gets the whole row,
+       as one line: label, amount + tier, what's left. */
+    .earn { grid-column:1/-1; display:grid; grid-template-columns:auto 1fr auto; align-items:center; column-gap:2.4vmin; }
+    .earn .amt { justify-content:center; }
+    .earn .proj { text-align:right; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="mode" id="mode">…</div>
+    <div class="clock" id="clock"></div>
+    <div class="date" id="date"></div>
+  </header>
+  <section class="strip">
+    <div class="card batt" id="batt"></div>
+    <div class="card rules" id="rules"></div>
+  </section>
+  <main>
+    <section class="card now" id="now"></section>
+    <section class="card list">
+      <div class="head"><span>My day</span><span></span><span>Did I finish?</span><span>Rules?</span></div>
+      <div class="rows" id="rows"></div>
+    </section>
+  </main>
+  <section class="cal" id="cal"></section>
+  <div class="banner hollow" id="banner"></div>
+  <footer>
+    <div class="card choice"><h3 class="hd">I am working for…</h3><div class="chips" id="chips"></div></div>
+    <div class="card tools"><h4 class="hd">My tools for big feelings</h4><div class="chips" id="tools"></div></div>
+    <div class="card earn" id="earn"></div>
+    <div class="why" id="why"></div>
+  </footer>
+</div>
+
+<div id="gate" hidden>
+  <div class="card">
+    <h2>🔒 This board is private</h2>
+    <div class="sub">Ask a grown-up for this board’s kiosk code.<br>It is in <b>/admin → Settings</b> on the parent console.</div>
+    <input id="gateToken" type="text" autocomplete="off" spellcheck="false" placeholder="kiosk code">
+    <button class="big" id="gateBtn">Unlock the board</button>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let S = null;
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]));
+
+// The board's data is gated by a kiosk token; the page shell is not. The token
+// lives in this device's localStorage after first unlock (or arrive via a
+// ?token= deep link) and rides along on every fetch.
+const token = () => localStorage.getItem('bd_token') || '';
+const setToken = t => { localStorage.setItem('bd_token', t.trim()); };
+const apiHeaders = () => ({ 'content-type': 'application/json', ...(token() ? { 'x-kiosk-token': token() } : {}) });
+
+function showGate() {
+  const pre = new URLSearchParams(location.search).get('token') || token();
+  $('gate').hidden = false;
+  const inp = $('gateToken');
+  if (pre && inp.value !== pre) inp.value = pre;
+  inp.select?.();
+}
+async function gateSubmit() {
+  const t = $('gateToken').value.trim();
+  if (!t) return;
+  const r = await fetch('/api/today', { cache: 'no-store', headers: { 'x-kiosk-token': t } });
+  if (r.status === 401) { $('gateBtn').textContent = 'That code did not work — try again'; return; }
+  setToken(t);
+  $('gate').hidden = true;
+  load();
+}
+$('gateBtn').onclick = gateSubmit;
+$('gateToken').addEventListener('keydown', e => { if (e.key === 'Enter') gateSubmit(); });
+
+function clock() {
+  const d = new Date();
+  $('clock').textContent = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  $('date').innerHTML = d.toLocaleDateString([], { weekday: 'long' }) + '<br>' + d.toLocaleDateString([], { month: 'long', day: 'numeric' });
+}
+const ring = '<span class="pend"></span>';
+const markFinish = it => it.finished === 1 ? '<span class="ok">✓</span>' : it.finished === 0 ? '<span class="no">✗</span>' : ring;
+const markRules = it => it.rules === 'check' ? '<span class="ok">✓</span>' : it.rules === 'turnaround' ? '<span class="turn">⭐</span>'
+  : it.rules === 'x' ? '<span class="no">✗</span>' : ring;
+
+function render() {
+  if (!S || !S.day) { $('mode').textContent = 'No schedule'; return; }
+  // a planned day is named for what's happening — "Beach Day", not "Trip Day"
+  $('mode').textContent = `${S.mode.emoji || ''} ${(S.plan && S.plan.label) || S.mode.name}`.trim();
+  $('mode').style.background = S.mode.color;
+  const cur = S.items.find(i => i.finished == null);
+  const tight = S.items.length > 7;          // the list gets thin, so the Now card slims too
+  // --n is how many rows share the list's height: row type is sized from the row
+  // itself (cqh / --n), so a long day goes smaller instead of scrolling out of view.
+  $('rows').style.setProperty('--n', S.items.length || 1);
+  $('rows').innerHTML = S.items.map(i => `
+    <div class="row ${cur && cur.id === i.id ? 'cur' : ''}" data-id="${i.id}">
+      <div class="t"><span class="ic">${esc(i.icon)}</span><span class="tx">${esc(i.title)}</span></div>
+      <div class="tm">${esc(i.start || '')}</div>
+      <div class="mark">${markFinish(i)}</div><div class="mark">${markRules(i)}</div>
+    </div>`).join('');
+  $('rows').querySelectorAll('.row').forEach(r => r.onclick = () => {
+    const it = S.items.find(x => x.id == r.dataset.id);
+    if (it.finished === 1 && !it.rules) post(`/api/today/items/${it.id}/finish`, { done: false });
+    else if (it.finished == null) post(`/api/today/items/${it.id}/finish`, { done: true });
+  });
+  if (cur) {
+    $('now').className = 'card now' + (tight ? ' tight' : '');
+    $('now').innerHTML = `<div class="hd">Now</div>${tight ? '' : `<div class="icon">${esc(cur.icon)}</div>`}
+      <div class="title">${tight ? esc(cur.icon) + ' ' : ''}${esc(cur.title)}</div>
+      <div class="meta">${[cur.start, cur.minutes ? cur.minutes + ' min' : ''].filter(Boolean).join(' · ')}${cur.note ? ' · ' + esc(cur.note) : ''}</div>
+      <button class="big" id="doneBtn">I finished!</button>`;
+    $('doneBtn').onclick = () => post(`/api/today/items/${cur.id}/finish`, { done: true });
+  } else {
+    $('now').className = 'card now done' + (tight ? ' tight' : '');
+    $('now').innerHTML = `${tight ? '' : '<div class="icon">🌟</div>'}<div class="title">${tight ? '🌟 ' : ''}All done!</div>
+      <div class="meta">${S.reward.pending ? 'Waiting for a grown-up to check the rules' : 'Great job today' + (S.child_name ? ', ' + esc(S.child_name) : '') + '!'}</div>`;
+  }
+  // battery: lines, read-only here — a grown-up moves them, the child reads them
+  const b = S.battery;
+  $('batt').innerHTML = `<h4 class="hd">My battery</h4>
+    <div class="row1"><div class="name" style="color:${b.band.color}">${esc(b.band.name)}</div>
+      <div class="segs">${Array.from({ length: b.max }, (_, i) => `<i style="${i < b.lines ? `background:${b.band.color};border-color:${b.band.color}` : ''}"></i>`).join('')}</div>
+      <div class="cap">${b.lines} of ${b.max}</div></div>`;
+  $('rules').innerHTML = `<h4 class="hd">Being in control means</h4><ol>${S.rules.map(r =>
+    `<li>${esc(r.icon)} ${esc(r.title)}${r.body ? ` <small>— ${esc(r.body)}</small>` : ''}</li>`).join('')}</ol>`;
+  $('tools').innerHTML = S.tools.map(t => `<button class="chip ${t.used ? 'used' : ''}" data-id="${t.id}">${esc(t.icon)} ${esc(t.label)}</button>`).join('');
+  $('tools').querySelectorAll('.chip').forEach(b => b.onclick = () => useTool(Number(b.dataset.id)));
+  // "Pause any reinforcement that may be going on" — and the way back
+  // The week ahead, and what today is. The banner is one slot: a paused reward
+  // outranks the day's plan, which outranks a tool just used.
+  // today filled, the days behind it quiet, a planned day in its own colour
+  $('cal').innerHTML = S.calendar.map(d => `
+    <div class="d ${d.is_today ? 'on' : ''} ${!d.is_today && d.date < S.date ? 'past' : ''} ${d.source === 'plan' ? 'plan' : ''}"
+      style="${d.source === 'plan' ? `border-color:${d.color}` : ''}">
+      <b>${d.is_today ? 'Today' : d.day_name}</b><span>${esc(d.emoji)}<i class="nm"> ${esc(d.label || d.mode_name)}</i></span></div>`).join('');
+  // Today's plan gets the banner; the strip already counts out what's next.
+  const planNote = S.plan && (S.plan.label || S.plan.note)
+    ? `${S.mode.emoji || ''} ${S.plan.label || 'A different kind of day'}`
+      + (S.plan.note ? ` — ${S.plan.note}` : '')
+    : '';
+  const ban = $('banner');
+  const said = S.pause.active
+    ? (S.pause.resume_ready
+      ? '✅ You used a tool and checked in. A grown-up can turn the fun back on now.'
+      : `🛑 ${S.pause.reason ? S.pause.reason + ' — ' : ''}Rewards are paused. Use a tool, then check in with a grown-up.`)
+    : (planNote || S.calmMsg || '');
+  // an empty banner stays in the layout (hollow, not gone) so the bands never jump
+  ban.className = 'banner' + (said ? '' : ' hollow')
+    + (S.pause.resume_ready ? ' ready' : (S.pause.active ? '' : planNote ? ' plan' : ''));
+  ban.textContent = said;
+  $('why').innerHTML = S.rewards.map(r => `<div>• ${esc(r)}</div>`).join('');
+  $('chips').innerHTML = S.choices.map(c => `<button class="chip ${S.day.working_for === c.label ? 'sel' : ''}" data-l="${esc(c.label)}">${esc(c.icon)} ${esc(c.label)}</button>`).join('');
+  $('chips').querySelectorAll('.chip').forEach(b => b.onclick = () => post('/api/today/choice', { label: S.day.working_for === b.dataset.l ? '' : b.dataset.l }));
+  const r = S.reward;
+  const tierTxt = { all: 'ALL CHECKS! 🌟', one: '1 X', two: '2 or more X' }[r.tier];
+  $('earn').innerHTML = `<h3 class="hd">Time I earned</h3>
+    <div class="amt"><div class="min">${r.minutes}<small> min</small></div><div class="tier ${r.tier}">${tierTxt}</div></div>
+    <div class="proj">${r.final ? 'final' : r.projected > r.minutes ? `finish the rest clean for ${r.projected} min` : r.pending + ' to go'}</div>`;
+}
+async function post(url, body) {
+  try {
+    const r = await fetch(url, { method: 'POST', headers: apiHeaders(), body: JSON.stringify(body) });
+    if (r.status === 401) { showGate(); return; }
+    S = await r.json(); render();
+  } catch {}
+}
+// Using a tool is the thing we want them reaching for, so it gets its own
+// moment: the banner holds the calm prompt for a few seconds instead of being
+// overwritten.
+async function useTool(id) {
+  const t = S.tools.find(x => x.id === id); if (!t) return;
+  try {
+    const r = await fetch(`/api/today/tools/${id}/use`, { method: 'POST', headers: apiHeaders(), body: '{}' });
+    if (r.status === 401) { showGate(); return; }
+    const j = await r.json();
+    const keep = j.pause.active ? '' : `${t.icon} ${t.label} — nice. That helps me stay in control.`;
+    S = Object.assign({}, j, { calmMsg: keep });
+    render();
+    clearTimeout(useTool.t); clearTimeout(useTool.hard);
+    if (keep) { useTool.t = setTimeout(() => { S.calmMsg = ''; render(); }, 7000); }
+    useTool.hard = setTimeout(load, 20000);
+  } catch {}
+}
+async function load() {
+  try {
+    const r = await fetch('/api/today', { cache: 'no-store', headers: apiHeaders() });
+    if (r.status === 401) { if (token() && !new URLSearchParams(location.search).has('token')) { setToken(''); localStorage.removeItem('bd_token'); } showGate(); return; }
+    S = Object.assign(await r.json(), { calmMsg: S?.calmMsg || '' });
+    $('gate').hidden = true;
+    render();
+  } catch {}
+}
+clock(); setInterval(clock, 10000);
+load(); setInterval(load, 8000);
+if ('wakeLock' in navigator) { const wl = () => navigator.wakeLock.request('screen').catch(() => {}); wl(); document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && wl()); }
+</script>
+</body>
+</html>

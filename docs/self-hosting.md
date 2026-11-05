@@ -1,0 +1,80 @@
+# Self-hosting
+
+One process, one file. Everything you need to run a board.
+
+## Prerequisites
+
+- A machine you can reach from the kiosk: a Raspberry Pi, a home server, a
+  VPS, or a PaaS. 512 MB of RAM is more than enough.
+- Docker (recommended), or Node ≥ 22.13.
+
+## Docker Compose (recommended)
+
+```sh
+git clone https://github.com/arbog/behavior-dashboard
+cd behavior-dashboard
+docker compose up -d
+```
+
+- Binds `127.0.0.1:8080` by default. Reach the console from that machine with
+  `http://127.0.0.1:8080/admin`. To reach it from the LAN, change the port line
+  to `"8080:3000"`.
+- Data lives in the `board-data` volume (`/data/board.db` inside).
+- `docker compose pull && docker compose up -d` upgrades.
+
+### Non-interactive provisioning
+
+For a PaaS or an unattended install, set the credentials in env — they only
+take effect on the **first** run:
+
+```yaml
+environment:
+  - TZ=America/Los_Angeles
+  - ADMIN_PASSWORD=${ADMIN_PASSWORD}
+  - KIOSK_TOKEN=${KIOSK_TOKEN}   # optional; else one is generated
+```
+
+`ADMIN_PASSWORD` skips the setup screen; `KIOSK_TOKEN` seeds the kiosk code.
+After first run, the database is the source of truth (change the password in
+the console; rotating the kiosk code invalidates the env value).
+
+## Bare Node
+
+```sh
+node server.js        # or: npm start
+```
+
+Data goes to `./data/board.db` (override with `DB_PATH`). Port 3000
+(override with `PORT`). No install step — there are no dependencies.
+
+## Exposure
+
+| Situation | What to do |
+|---|---|
+| Kiosk and phone are on the LAN, you rarely need it away | Bind the port to the LAN (`"8080:3000"` or `0.0.0.0`) with a strong admin password + kiosk code. |
+| A parent is often away (school runs, work) | Put TLS in front. Options, easiest first: **Cloudflare Tunnel** (no open ports, free, works with the app's `X-Forwarded-For` handling), **Caddy** auto-TLS, or your router's reverse proxy. |
+| Full internet exposure, no reverse proxy | Don't. The app is private but it is not a hardened public service; get TLS and strong credentials first. |
+
+The app trusts `X-Forwarded-For` for per-IP rate limiting when it is present —
+which is why a reverse proxy should strip/replace it (most do by default).
+
+## The kiosk appliance
+
+The kiosk is a browser tab in kiosk mode that points at `/?token=<code>`:
+
+- **Chromium/Chrome (Linux, Android)**: `chromium --kiosk --no-first-run "http://HOST/?token=<code>"`. The code is saved on the device after first unlock, so a bare `http://HOST/` works from then on.
+- **iPad**: Safari → Add to Home Screen → full-screen kiosk; or an MDM kiosk app.
+- **Smart TV (webOS/Tizen)**: point the browser at the URL once; the token persists in its storage.
+
+Screen wake-lock is handled in-app; the page refreshes every 8 seconds.
+
+## Backup & restore
+
+Stop the app, copy `board.db` (and `-wal`/`-shm` if present), start it. Or,
+without stopping: `sqlite3 board.db ".backup /tmp/backup.db"`. Restore = copy
+the file back into `/data` (or `./data`), restart. The schema is created and
+migrated automatically on boot; there are no other moving parts.
+
+## Uninstall
+
+Delete the container and the `board-data` volume. That is the whole footprint.
