@@ -9,7 +9,8 @@
 //   /admin, /api/admin/* parent console. Gated by an admin password
 //                              (scrypt hash) with cookie sessions, login
 //                              rate-limit + lockout, and per-IP API limits.
-//   /healthz             liveness + DB probe. The only fully open endpoint;
+//   /healthz             liveness + DB probe (+ whether the store is
+//                              encrypted). The only fully open endpoint;
 //                              it leaks nothing.
 //
 // Zero npm dependencies: node:http + node:sqlite + node:crypto (Node >= 22.13).
@@ -55,8 +56,27 @@ function secureDataFiles() {
 }
 secureDataFiles();
 
-const db = new DatabaseSync(DB_PATH);
-db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;');
+// ---- 0018: the store. Plaintext mode behaves exactly as before; with
+// BD_PASSPHRASE set (and/or BD_ENCRYPTION=on) the data directory holds one
+// encrypted blob, the working copy lives on tmpfs when possible, and a 30 s
+// cadence + clean shutdown re-encrypt. See docs/research/encryption.md.
+const { openStore } = require('./store.js');
+const store = openStore({ dbPath: DB_PATH, log: console.log });
+const db = store.db;
+if (store.encrypted) {
+  // Re-encrypt the working copy when it has changed since the last blob.
+  // Honest bound: a kill -9 loses at most this much, and the boot
+  // reconciliation recovers it if the working copy survived.
+  const REENCRYPT_MS = 30000;
+  setInterval(() => { try { store.persist(); } catch (e) { console.error('re-encrypt failed:', e.message); } }, REENCRYPT_MS).unref();
+  const shutdown = sig => {
+    console.log(`${sig}: persisting the encrypted database, then exiting`);
+    try { store.close(); } catch (e) { console.error('shutdown persist failed:', e.message); }
+    process.exit(0);
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+}
 // Re-run after opening: SQLite may have created -wal/-shm on this call.
 secureDataFiles();
 db.exec(`
@@ -1522,7 +1542,7 @@ const server = http.createServer(async (req, res) => {
     // The probe is what says the SQLite volume still works: an app that answers
     // while its DB is locked or unreadable is not healthy.
     if (p === '/healthz') {
-      try { db.prepare('SELECT 1 AS ok').get(); return json(res, 200, { ok: true, db: true, version: VERSION }); }
+      try { db.prepare('SELECT 1 AS ok').get(); return json(res, 200, { ok: true, db: true, version: VERSION, encrypted: !!store.encrypted }); }
       catch (e) { return json(res, 503, { ok: false, error: clampStr(e.message, 120) }); }
     }
     if (p.startsWith('/api/admin/')) {
@@ -1599,4 +1619,4 @@ if (!getSetting('admin_hash') && !getSetting('setup_token_hash')) {
 if (require.main === module) {
   server.listen(PORT, () => console.log(`behavior-dashboard listening on :${PORT} (db ${DB_PATH})`));
 }
-module.exports = { server, db, itemStatus, reward, riskFromLevels, batteryView, BATTERY_LINES, hashPassword, verifyPassword, clientIp, isPrivateAddr, profileFlags, PROFILE_PRESETS, profile };
+module.exports = { server, db, store, itemStatus, reward, riskFromLevels, batteryView, BATTERY_LINES, hashPassword, verifyPassword, clientIp, isPrivateAddr, profileFlags, PROFILE_PRESETS, profile };
