@@ -38,8 +38,8 @@ code task runs. Dependent tasks carry a Stop-and-ask for the missing doc.
 ## P — Passkey auth (see `docs/self-service.md`)
 - [x] `0004` research: WebAuthn under zero-dep Node →
   `docs/research/webauthn.md` (landed 2026-11-05, in-session)
-- [ ] `0015` WebAuthn endpoints (credentials table, register/sign-in, audit)
-- [ ] `0016` console passkey UI (enroll card + login button)
+- [x] `0015` WebAuthn endpoints (credentials table, register/sign-in, audit) (landed 2026-11-05)
+- [x] `0016` console passkey UI (enroll card + login button) (landed 2026-11-05)
 
 ## C — Compliance & privacy
 - [x] `0001` research: child-data law matrix (COPPA + states) →

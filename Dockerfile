@@ -8,7 +8,7 @@ RUN mkdir -p /data && chown -R node:node /data
 USER node
 WORKDIR /app
 
-COPY server.js ./
+COPY server.js webauthn.js ./
 COPY package.json ./
 COPY public ./public
 

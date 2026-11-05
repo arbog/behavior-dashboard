@@ -20,6 +20,7 @@
 
 const http = require('node:http');
 const fs = require('node:fs');
+const { b64u, b64uToBuf, sha256: wSha256, cborDecode, coseKey, parseAuthData, newChallenge, takeChallenge, checkClientData } = require('./webauthn.js');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
@@ -102,6 +103,14 @@ CREATE TABLE IF NOT EXISTS kiosk_devices (
 CREATE TABLE IF NOT EXISTS api_keys (
   id INTEGER PRIMARY KEY, name TEXT NOT NULL, key_hash TEXT NOT NULL, prefix TEXT NOT NULL,
   created_at TEXT NOT NULL, last_used_at TEXT DEFAULT '', revoked_at TEXT);
+-- Passkeys (0015): a second way to mint the same session cookie. The password
+-- stays the recovery path; the kiosk code is untouched. public_key is the
+-- credential's JWK JSON; sign_count feeds the cloned-authenticator check.
+CREATE TABLE IF NOT EXISTS passkeys (
+  id INTEGER PRIMARY KEY, credential_id TEXT UNIQUE NOT NULL, name TEXT NOT NULL DEFAULT 'passkey',
+  public_key TEXT NOT NULL, sign_count INTEGER NOT NULL DEFAULT 0, aaid TEXT DEFAULT '',
+  user_handle TEXT NOT NULL DEFAULT 'admin', created_at TEXT NOT NULL, last_used_at TEXT DEFAULT '',
+  revoked_at TEXT);
 `);
 
 // Bounded audit trail: what happened to the board's keys and who touched it.
@@ -738,7 +747,7 @@ function kiosk(req, res, url, body) {
     if (!tool) return json(res, 404, { error: 'not found' });
     db.prepare('INSERT INTO tool_uses(ts,tool_id,date,by) VALUES(?,?,?,?)').run(tsNow(), tool.id, localParts().date, clampStr(body.by, 40) || childName() || 'kiosk');
     const p = todayPayload();
-    return json(res, 200, { ...p, just_used: { label: tool.label, icon: tool.icon }, calm: p.pause.active
+    return json(res, 200, { ...p, just_used: { label: tool.label, icon: tool.icon }, calm: p.pause?.active
       ? 'Nice. A grown-up can turn the fun back on once you have checked in.' : '' });
   }
   return json(res, 404, { error: 'not found' });
@@ -950,6 +959,60 @@ function admin(req, res, url, body, user) {
     logEvent('setup', ip);
     return json(res, 200, { ok: true }, { 'set-cookie': newSession() });
   }
+
+  // ---- passkeys (0015): the OPEN half is the login. A passkey mints the
+  // same session cookie the password mints; it is not a different authority.
+  // RP ID: one setting/env (BD_RP_ID, default the request host without port)
+  // — a later domain change is a config change plus re-enrollment.
+  const rpId = () => String(process.env.BD_RP_ID || String(req.headers.host || '').split(':')[0]).toLowerCase();
+  const requestOrigin = () => {
+    if (process.env.BD_EXPECTED_ORIGIN) return process.env.BD_EXPECTED_ORIGIN;
+    const xf = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+    const proto = xf || (req.socket.encrypted ? 'https' : 'http');
+    return proto + '://' + (req.headers.host || 'localhost');
+  };
+  const webauthnFail = (detail, code = 400) => { logEvent('webauthn_fail', ip, detail, false); return json(res, code, { error: detail }); };
+
+  if (M === 'GET' && p === '/api/admin/webauthn/begin-authentication') {
+    if (!rateLimit('wauth-begin:' + ip, 60, 60000)) return json(res, 429, { error: 'too many requests' });
+    if (!db.prepare('SELECT COUNT(*) c FROM passkeys WHERE revoked_at IS NULL').get().c) return json(res, 404, { error: 'no passkeys on this board yet — sign in with your password' });
+    return json(res, 200, { challenge: newChallenge('auth'), rpId: rpId(), timeout: 60000, userVerification: 'preferred' });
+  }
+  if (M === 'POST' && p === '/api/admin/webauthn/finish-authentication') {
+    if (!rateLimit('wauth-finish:' + ip, 10, 60000)) { logEvent('webauthn_fail', ip, 'rate limited', false); return json(res, 429, { error: 'too many attempts' }); }
+    const ch = takeChallenge(body.challenge, 'auth');
+    if (!ch) return webauthnFail('challenge expired or unknown', 400);
+    const cd = checkClientData(body.response?.clientDataJSON, { type: 'webauthn.get', challenge: body.challenge, origin: requestOrigin() });
+    if (cd.error) return webauthnFail(cd.error);
+    let cred;
+    try { cred = parseAuthData(b64uToBuf(body.response.authenticatorData)); } catch (e) { return webauthnFail('authenticator data: ' + e.message); }
+    if (!cred.up) return webauthnFail('user presence not asserted');
+    if (cred.rpIdHash.compare(wSha256(rpId())) !== 0) return webauthnFail('rp id mismatch');
+    const row = db.prepare('SELECT * FROM passkeys WHERE credential_id=? AND revoked_at IS NULL').get(String(body.id));
+    if (!row) return webauthnFail('unknown credential', 401);
+    let pub, hash;
+    try {
+      const jwk = JSON.parse(row.public_key);
+      pub = crypto.createPublicKey({ format: 'jwk', key: jwk });
+      hash = jwk.alg === 'EdDSA' ? null : 'sha256';
+    } catch (e) { return webauthnFail('stored key unreadable — re-enroll'); }
+    const signed = Buffer.concat([b64uToBuf(body.response.authenticatorData), wSha256(b64uToBuf(body.response.clientDataJSON))]);
+    let ok = false;
+    try { ok = hash ? crypto.verify(hash, signed, pub, b64uToBuf(body.response.signature)) : crypto.verify(null, signed, pub, b64uToBuf(body.response.signature)); } catch {}
+    if (!ok) return webauthnFail('signature did not verify', 401);
+    // Clone detection: a counter that does not advance means the credential
+    // was duplicated. Zero-counters (authenticators with no counter) are only
+    // allowed when BOTH sides are zero — a credential that reported a count
+    // and suddenly reports zero is a different, cloned device.
+    const newCount = cred.signCount;
+    if (!(newCount === 0 && row.sign_count === 0) && newCount <= row.sign_count) {
+      logEvent('webauthn_counter_rollback', ip, 'credential ' + String(body.id).slice(0, 12), false);
+      return webauthnFail('this credential looks cloned — sign in with your password and remove it from the console', 401);
+    }
+    db.prepare('UPDATE passkeys SET sign_count=?, last_used_at=? WHERE id=?').run(newCount || row.sign_count, tsNow(), row.id);
+    logEvent('webauthn_signin', ip, row.name);
+    return json(res, 200, { ok: true }, { 'set-cookie': newSession() });
+  }
   // Everything below requires an admin session — including the password
   // endpoints: changing the password, reading or rotating the kiosk token, and
   // every board-copy editor is session-gated on purpose.
@@ -998,6 +1061,51 @@ function admin(req, res, url, body, user) {
     logEvent('kiosk_device_add', ip, label);
     // The raw token is shown once — this response is the only copy.
     return json(res, 200, { id, label, token });
+  }
+
+  // ---- passkeys (0015): the session-gated half. Enrollment, list, revoke.
+  if (M === 'GET' && p === '/api/admin/webauthn/begin-registration') {
+    return json(res, 200, {
+      challenge: newChallenge('register'), rpId: rpId(), timeout: 60000, attestation: 'none',
+      user: { id: b64u(Buffer.from('admin')), name: childName() || 'admin' },
+      pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -8 }, { type: 'public-key', alg: -257 }],
+      authenticatorSelection: { residentKey: 'preferred', userVerification: 'required' },
+    });
+  }
+  if (M === 'POST' && p === '/api/admin/webauthn/finish-registration') {
+    const ch = takeChallenge(body.challenge, 'register');
+    if (!ch) return webauthnFail('challenge expired or unknown');
+    const cd = checkClientData(body.response?.clientDataJSON, { type: 'webauthn.create', challenge: body.challenge, origin: requestOrigin() });
+    if (cd.error) return webauthnFail(cd.error);
+    let att, cred;
+    try {
+      att = cborDecode(b64uToBuf(body.response.attestationObject));
+      cred = parseAuthData(Buffer.from(att.authData));
+    } catch (e) { return webauthnFail('attestation: ' + e.message); }
+    if (!cred.up || !cred.at || !cred.uv) return webauthnFail('the authenticator did not assert user presence + verification');
+    if (cred.rpIdHash.compare(wSha256(rpId())) !== 0) return webauthnFail('rp id mismatch');
+    let parsed;
+    try { parsed = coseKey(cred.credential.pub); } catch (e) { return webauthnFail('unsupported credential key: ' + e.message); }
+    const cid = b64u(cred.credential.id);
+    if (db.prepare('SELECT 1 FROM passkeys WHERE credential_id=?').get(cid)) return webauthnFail('this credential is already enrolled');
+    const count = db.prepare('SELECT COUNT(*) c FROM passkeys WHERE revoked_at IS NULL').get().c;
+    if (count >= 8) return json(res, 400, { error: 'keep at most 8 passkeys — remove one first' });
+    const name = clampStr(body.name, 40).trim() || 'passkey';
+    const info = db.prepare('INSERT INTO passkeys(credential_id,name,public_key,sign_count,aaid,created_at,last_used_at) VALUES(?,?,?,?,?,?,?)')
+      .run(cid, name, JSON.stringify(parsed.jwk), cred.signCount, cred.credential.aaguid.toString('hex'), tsNow(), '');
+    logEvent('webauthn_register', ip, name);
+    return json(res, 200, { ok: true, id: Number(info.lastInsertRowid), name });
+  }
+  if (M === 'GET' && p === '/api/admin/webauthn/credentials') {
+    const keys = db.prepare('SELECT id,name,aaid,created_at,last_used_at,revoked_at FROM passkeys ORDER BY id').all();
+    return json(res, 200, { keys, rp_id: rpId() });
+  }
+  if (M === 'DELETE' && (m = p.match(/^\/api\/admin\/webauthn\/credentials\/(\d+)$/))) {
+    const key = db.prepare('SELECT id,name FROM passkeys WHERE id=? AND revoked_at IS NULL').get(Number(m[1]));
+    if (!key) return json(res, 404, { error: 'no such passkey' });
+    db.prepare('UPDATE passkeys SET revoked_at=? WHERE id=?').run(tsNow(), key.id);
+    logEvent('webauthn_remove', ip, key.name);
+    return json(res, 200, { ok: true, name: key.name });
   }
   if (M === 'DELETE' && (m = p.match(/^\/api\/admin\/kiosk-devices\/(\d+)$/))) {
     const dev = db.prepare('SELECT id,label FROM kiosk_devices WHERE id=? AND revoked_at IS NULL').get(Number(m[1]));
