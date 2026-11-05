@@ -34,8 +34,26 @@ const PUBLIC_DIR = process.env.PUBLIC_DIR || path.join(__dirname, 'public');
 const SECURE = process.env.SECURE_COOKIES === '1';
 
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+
+// The data directory is a child's behavioral record. A permissive umask on a
+// bare-Node start would leave it world-readable. Tighten it at boot, best-effort:
+// a filesystem that refuses the chmod (or a platform where it is meaningless)
+// must warn, not fail to boot.
+function secureDataFiles() {
+  if (DB_PATH === ':memory:') return;
+  const tryChmod = (p, mode) => {
+    try { if (fs.existsSync(p)) fs.chmodSync(p, mode); }
+    catch (e) { console.warn(`could not set ${mode.toString(8)} on ${p}: ${e.message}`); }
+  };
+  tryChmod(path.dirname(DB_PATH), 0o700);
+  for (const p of [DB_PATH, `${DB_PATH}-wal`, `${DB_PATH}-shm`]) tryChmod(p, 0o600);
+}
+secureDataFiles();
+
 const db = new DatabaseSync(DB_PATH);
 db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;');
+// Re-run after opening: SQLite may have created -wal/-shm on this call.
+secureDataFiles();
 db.exec(`
 CREATE TABLE IF NOT EXISTS modes (
   id INTEGER PRIMARY KEY, name TEXT NOT NULL, emoji TEXT DEFAULT '', color TEXT DEFAULT '#4f8cff',
