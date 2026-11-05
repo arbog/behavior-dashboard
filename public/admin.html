@@ -356,7 +356,7 @@ function vWeek() {
 
 // ---------- Settings: identity, security, battery copy, rewards, protocol ----------
 async function vSettings() {
-  const [tok, sec, sess] = await Promise.all([api('GET', '/token'), api('GET', '/security'), api('GET', '/sessions')]);
+  const [sec, sess, kdev] = await Promise.all([api('GET', '/security'), api('GET', '/sessions'), api('GET', '/kiosk-devices')]);
   const secRow = e => `<div class="row" style="padding:6px 0;border-bottom:1px solid var(--line);gap:10px">
       <span class="dim" style="width:52px">${esc(String(e.ts).slice(5, 16))}</span>
       <span style="width:140px;font-weight:600;${e.ok ? '' : 'color:var(--bad)'}">${esc(e.kind)}${e.ok ? '' : ' ✗'}</span>
@@ -367,13 +367,18 @@ async function vSettings() {
       <button class="b" id="setNameBtn">Save</button></div>
     <div class="dim mt">Leave blank for name-free wording ("Great job today!" instead of "Great job today, Sam!").</div></div>
 
-  <div class="card"><h2>Kiosk code</h2>
-    <div class="dim">The TV/iPad needs this to see the board — <code>/</code> is public, every board endpoint is not. Put it in the kiosk once and forget it.</div>
-    <div class="row mt"><code id="tok" class="grow">${esc(tok.token)}</code><button class="b sec" id="tokCopy">Copy</button></div>
-    <div class="row mt"><div class="grow"><input id="tokUrl" value="${location.origin.replace(/^http/, 'https')}?token=${esc(tok.token)}" readonly></div></div>
-    <div class="dim mt" style="font-size:13px">That URL is what you open on the kiosk (edit the host to yours; the <code>?token=</code> is saved on the device the first time). Rotating the code below signs every kiosk out at once.</div>
-    <div class="mt"><button class="b del" id="tokRotate">Rotate kiosk code</button></div>
-    <div class="dim mt" style="font-size:13px">Last used: ${sec.kiosk_last_used ? esc(sec.kiosk_last_used) : 'no kiosk has connected yet'}</div></div>
+  <div class="card"><h2>Kiosk devices</h2>
+    <div class="dim">Each TV/iPad gets its own code — revoke one without revoking the others. Put it in the kiosk once and forget it.</div>
+    ${kdev.devices.filter(d => !d.revoked_at).map(d => `<div class="row" style="padding:6px 0;border-bottom:1px solid var(--line)">
+      <span style="width:150px;font-weight:600">${esc(d.label)}</span>
+      <span class="dim grow">added ${esc(String(d.created_at).slice(0, 16))} · last used ${esc(String(d.last_used_at || '—').slice(5, 16))}</span>
+      <button class="b sec" data-revoke="${d.id}" data-label="${esc(d.label)}">Revoke</button></div>`).join('')}
+    <div class="row mt"><input id="ndLabel" class="grow" maxlength="40" placeholder="New device label — Kitchen TV, iPad">
+      <button class="b" id="ndAdd">Add device</button></div>
+    <div id="ndNew" hidden><div class="dim mt">Give this to the kiosk <b>now — it is shown once</b>:</div>
+      <div class="row mt"><code id="ndTok" class="grow"></code><button class="b sec" id="ndCopy">Copy</button></div>
+      <div class="row mt"><div class="grow"><input id="ndUrl" readonly></div></div>
+      <div class="dim mt" style="font-size:13px">Open that URL on the kiosk (edit the host to yours); the <code>?token=</code> is saved on the device the first time.</div></div></div>
 
   <div class="card"><h2>Console password</h2>
     <div class="row"><input id="pwNow" type="password" class="grow" placeholder="Current password" autocomplete="current-password">
@@ -419,14 +424,19 @@ async function vSettings() {
     if (!confirm('Sign out every other device? They must sign in again.')) return;
     const out = await api('DELETE', '/sessions', {}); toast(`Signed out ${out.revoked}`); show();
   };
-  $('#tokCopy').onclick = async () => { await navigator.clipboard.writeText(tok.token); toast('Copied'); };
-  $('#tokRotate').onclick = async () => {
-    if (!confirm('Rotate the kiosk code? Every kiosk must be given the new code.')) return;
-    const out = await api('POST', '/token/rotate', {});
-    $('#tok').textContent = out.token;
-    $('#tokUrl').value = location.origin.replace(/^http/, 'https') + '?token=' + out.token;
-    toast('New code set');
+  $('#ndAdd').onclick = async () => {
+    const out = await api('POST', '/kiosk-devices', { label: $('#ndLabel').value });
+    $('#ndNew').hidden = false;
+    $('#ndTok').textContent = out.token;
+    $('#ndUrl').value = location.origin.replace(/^http/, 'https') + '?token=' + out.token;
+    $('#ndLabel').value = '';
   };
+  $('#ndCopy').onclick = async () => { await navigator.clipboard.writeText($('#ndTok').textContent); toast('Copied'); };
+  $('#view').querySelectorAll('[data-revoke]').forEach(b => b.onclick = async () => {
+    if (!confirm(`Revoke “${b.dataset.label}”? That kiosk must be given a new code.`)) return;
+    await api('DELETE', '/kiosk-devices/' + b.dataset.revoke); toast('Device revoked'); show();
+  });
+  $('#ndCopy').onclick = async () => { await navigator.clipboard.writeText($('#ndTok').textContent); toast('Copied'); };
   $('#pwBtn').onclick = async () => {
     try { await api('POST', '/password', { current: $('#pwNow').value, next: $('#pwNext').value }); $('#pwNow').value = $('#pwNext').value = ''; toast('Password changed'); } catch {}
   };

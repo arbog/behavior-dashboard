@@ -92,6 +92,9 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS security_events (
   id INTEGER PRIMARY KEY, ts TEXT NOT NULL, kind TEXT NOT NULL,
   ip TEXT DEFAULT '', detail TEXT DEFAULT '', ok INTEGER NOT NULL DEFAULT 1);
+CREATE TABLE IF NOT EXISTS kiosk_devices (
+  id INTEGER PRIMARY KEY, label TEXT NOT NULL, token_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL, last_used_at TEXT DEFAULT '', revoked_at TEXT);
 `);
 
 // Bounded audit trail: what happened to the board's keys and who touched it.
@@ -536,29 +539,42 @@ function sessionUser(req) {
 }
 function adminAuthed(req) { return !!sessionUser(req); }
 function kioskAuthed(req, url) {
-  const t = getSetting('kiosk_token');
-  if (!t) return false;
   // The header is always accepted. The query string is only accepted for the
   // kiosk's initial GET /api/today — the deep-link affordance, and the one
   // place the code may appear in a URL (and therefore in proxy logs). Every
   // write must carry the header, so taps never log the credential.
   const presented = String(req.headers['x-kiosk-token'] ||
     (req.method === 'GET' && url.pathname === '/api/today' ? url.searchParams.get('token') : null) || '').trim();
-  if (!presented || presented.length !== t.length) return false;
-  try { return crypto.timingSafeEqual(Buffer.from(presented), Buffer.from(t)); } catch { return false; }
+  if (!presented) return false;
+  const got = Buffer.from(sha256(presented), 'hex');
+  // Compare against every live device's stored hash. Timing-safe per row; a
+  // household has single-digit devices, so the row count is not a timing leak.
+  for (const d of db.prepare('SELECT id, token_hash FROM kiosk_devices WHERE revoked_at IS NULL').all()) {
+    const stored = Buffer.from(d.token_hash, 'hex');
+    if (stored.length === got.length && crypto.timingSafeEqual(stored, got)) {
+      noteKioskUse(d.id);
+      return true;
+    }
+  }
+  return false;
 }
 
-// Who/when last used the kiosk code: the console shows it so a parent sees the
-// TV talking to the board. Throttled to one note a minute — the kiosk polls
-// every 8 seconds and the settings table is not a traffic log.
-let kioskSeenAt = 0;
-function noteKioskUse(ip) {
+// Per-device "last used": the console shows the TV/iPad talking to the board,
+// and per-device is how a parent spots an unknown one. Throttled to one write
+// per 60s per device — the kiosk polls every 8 seconds.
+const kioskSeen = new Map();   // device id -> ts of last throttled write
+function noteKioskUse(deviceId, ip = '') {
   const now = Date.now();
-  // After a rotation (or a fresh install) the first use is noted immediately:
-  // "who has the new code" is the exact question the note exists to answer.
-  if (getSetting('kiosk_last_used') && now - kioskSeenAt < 60000) return;
-  kioskSeenAt = now;
-  setSetting('kiosk_last_used', `${tsNow()} from ${ip}`);
+  if (now - (kioskSeen.get(deviceId) || 0) < 60000) return;
+  kioskSeen.set(deviceId, now);
+  try { db.prepare('UPDATE kiosk_devices SET last_used_at=? WHERE id=?').run(tsNow(), deviceId); } catch {}
+}
+const KIOSK_DEVICES_MAX = 8;
+function newKioskDevice(label) {
+  const token = crypto.randomBytes(24).toString('hex');
+  const id = Number(db.prepare('INSERT INTO kiosk_devices(label,token_hash,created_at,last_used_at) VALUES(?,?,?,?)')
+    .run(clampStr(label, 40) || 'Kiosk', sha256(token), tsNow(), '').lastInsertRowid);
+  return { id, token };
 }
 
 // In-memory sliding-window rate limits (per install; the app is single-user).
@@ -886,18 +902,34 @@ function admin(req, res, url, body, user) {
     logEvent('password_change', ip);
     return json(res, 200, { ok: true });
   }
-  if (M === 'GET' && p === '/api/admin/token') return json(res, 200, { token: getSetting('kiosk_token') });
-  if (M === 'POST' && p === '/api/admin/token/rotate') {
-    setSetting('kiosk_token', crypto.randomBytes(24).toString('hex'));
-    setSetting('kiosk_last_used', null);
-    logEvent('token_rotate', ip);
-    return json(res, 200, { token: getSetting('kiosk_token') });
+  if (M === 'GET' && p === '/api/admin/kiosk-devices') {
+    const devices = db.prepare('SELECT id,label,created_at,last_used_at,revoked_at FROM kiosk_devices ORDER BY id').all();
+    return json(res, 200, { devices });
+  }
+  if (M === 'POST' && p === '/api/admin/kiosk-devices') {
+    const label = clampStr(body.label, 40).trim();
+    if (!label) return json(res, 400, { error: 'a device label is required' });
+    if (db.prepare('SELECT COUNT(*) c FROM kiosk_devices WHERE revoked_at IS NULL').get().c >= KIOSK_DEVICES_MAX) {
+      return json(res, 400, { error: `keep at most ${KIOSK_DEVICES_MAX} active devices — revoke one first` });
+    }
+    const { id, token } = newKioskDevice(label);
+    logEvent('kiosk_device_add', ip, label);
+    // The raw token is shown once — this response is the only copy.
+    return json(res, 200, { id, label, token });
+  }
+  if (M === 'DELETE' && (m = p.match(/^\/api\/admin\/kiosk-devices\/(\d+)$/))) {
+    const dev = db.prepare('SELECT id,label FROM kiosk_devices WHERE id=? AND revoked_at IS NULL').get(Number(m[1]));
+    if (!dev) return json(res, 404, { error: 'no such active device' });
+    db.prepare('UPDATE kiosk_devices SET revoked_at=? WHERE id=?').run(tsNow(), dev.id);
+    logEvent('kiosk_device_revoke', ip, dev.label);
+    return json(res, 200, { ok: true, label: dev.label });
   }
   // The audit trail itself: recent security events + who last used the kiosk
   // code. This is the card that answers "was the TV the only thing on it?".
   if (M === 'GET' && p === '/api/admin/security') {
     const events = db.prepare('SELECT ts,kind,ip,detail,ok FROM security_events ORDER BY id DESC LIMIT 50').all();
-    return json(res, 200, { kiosk_last_used: getSetting('kiosk_last_used') || null, events });
+    const kiosk_devices = db.prepare('SELECT label,last_used_at FROM kiosk_devices WHERE revoked_at IS NULL ORDER BY id').all();
+    return json(res, 200, { kiosk_devices, events });
   }
   // Signed-in devices: visible, and killable individually. The sid is the
   // 12-char prefix of the stored hash — enough to match a row, never enough
@@ -1218,6 +1250,18 @@ seed();
 if (process.env.ADMIN_PASSWORD && !getSetting('admin_hash')) {
   setSetting('admin_hash', hashPassword(String(process.env.ADMIN_PASSWORD)));
   console.log('admin password set from ADMIN_PASSWORD env (first run only)');
+}
+// Kiosk device migration: a pre-0009 install had one shared token in
+// settings. Import it as a named device so it keeps working, and revoke-by-
+// device works from then on. Runs once; the legacy setting is left in place
+// (harmless) but is no longer consulted by auth.
+if (!db.prepare('SELECT 1 FROM kiosk_devices LIMIT 1').get()) {
+  const legacy = getSetting('kiosk_token');
+  if (legacy) {
+    db.prepare('INSERT INTO kiosk_devices(label,token_hash,created_at,last_used_at) VALUES(?,?,?,?)')
+      .run('Original kiosk', sha256(String(legacy)), tsNow(), '');
+    console.log('migrated the shared kiosk code to device "Original kiosk"');
+  }
 }
 // Setup bootstrap token — closes the first-writer-wins race on a fresh board:
 // a stranger who finds the URL before the parent cannot claim the admin account.
