@@ -30,19 +30,23 @@ code task runs. Dependent tasks carry a Stop-and-ask for the missing doc.
 - [ ] `0012` API keys (admin-scoped) + `docs/api.md` reference
 
 ## W — Personalization (the wizard)
-- [ ] `0002` research (shadowbox): child profiles & what other kids need
+- [x] `0002` research: child profiles & what other kids need →
+  `docs/research/child-profiles.md` (landed 2026-11-05, in-session)
 - [ ] `0013` board-capability model + researched profile presets
 - [ ] `0014` kind onboarding wizard (client-only flow over existing endpoints)
 
 ## P — Passkey auth (see `docs/self-service.md`)
-- [ ] `0004` research (shadowbox): WebAuthn under zero-dep Node
+- [x] `0004` research: WebAuthn under zero-dep Node →
+  `docs/research/webauthn.md` (landed 2026-11-05, in-session)
 - [ ] `0015` WebAuthn endpoints (credentials table, register/sign-in, audit)
 - [ ] `0016` console passkey UI (enroll card + login button)
 
 ## C — Compliance & privacy
-- [ ] `0001` research (shadowbox): child-data law matrix (COPPA + states)
+- [x] `0001` research: child-data law matrix (COPPA + states) →
+  `docs/research/laws.md` (landed 2026-11-05, in-session)
 - [ ] `0017` compliance controls (consent gate, retention, delete-everything)
-- [ ] `0003` research (shadowbox): SQLite encryption-at-rest design
+- [x] `0003` research: SQLite encryption-at-rest design →
+  `docs/research/encryption.md` (landed 2026-11-05, in-session)
 - [ ] `0018` encryption at rest (whole-DB blob; the blob is the backup)
 
 ## M — Managed tier & deploy (ATTENDED ONLY — secrets/infra, never queued)
@@ -62,7 +66,11 @@ code task runs. Dependent tasks carry a Stop-and-ask for the missing doc.
 
 ## Handoffs (operator actions)
 
-| research task | copy accepted output to | consumed by |
+All four research tasks were executed in-session on 2026-11-05 and their
+outputs are **committed** (not machine-local) — the handoff is done, and the
+gated code tasks can read `docs/research/*.md` directly.
+
+| research task | committed at | consumed by |
 |---|---|---|
 | 0001 | `docs/research/laws.md` | 0017 |
 | 0002 | `docs/research/child-profiles.md` | 0013, 0014 |
