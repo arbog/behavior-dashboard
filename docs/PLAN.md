@@ -32,8 +32,8 @@ code task runs. Dependent tasks carry a Stop-and-ask for the missing doc.
 ## W — Personalization (the wizard)
 - [x] `0002` research: child profiles & what other kids need →
   `docs/research/child-profiles.md` (landed 2026-11-05, in-session)
-- [ ] `0013` board-capability model + researched profile presets
-- [ ] `0014` kind onboarding wizard (client-only flow over existing endpoints)
+- [x] `0013` board-capability model + researched profile presets (landed 2026-11-05)
+- [x] `0014` kind onboarding wizard (client-only flow over existing endpoints) (landed 2026-11-05)
 
 ## P — Passkey auth (see `docs/self-service.md`)
 - [x] `0004` research: WebAuthn under zero-dep Node →
