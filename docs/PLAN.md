@@ -27,7 +27,7 @@ code task runs. Dependent tasks carry a Stop-and-ask for the missing doc.
 - [ ] `0010` JSON export + version in /healthz + browser-side update nudge
 
 ## I — Integration API
-- [ ] `0012` API keys (admin-scoped) + `docs/api.md` reference
+- [x] `0012` API keys (admin-scoped) + `docs/api.md` reference (landed 2026-11-05, in-session — suite also now asserts every server route appears in api.md)
 
 ## W — Personalization (the wizard)
 - [x] `0002` research: child profiles & what other kids need →

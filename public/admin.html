@@ -419,6 +419,18 @@ async function vSettings() {
       ${s.current ? '' : `<button class="b sec" data-kill="${esc(s.sid)}">Sign out</button>`}</div>`).join('') || '<div class="dim">No sessions.</div>'}
     <div class="mt"><button class="b del" id="killAll">Sign out everything else</button></div></div>
 
+  <div class="card"><h2>API keys</h2>
+    <div class="dim">For automation — a home dashboard, a spreadsheet sync, a voice assistant. A key acts as you (its writes say so in the log), it cannot touch the kiosk, and it is shown <b>once</b> when created.</div>
+    ${(sec.api_keys || []).map(k => `<div class="row" style="padding:6px 0;border-bottom:1px solid var(--line)">
+      <span style="width:150px;font-weight:600">${esc(k.name)}</span>
+      <span class="dim grow"><code>${esc(k.prefix)}…</code> · created ${esc(String(k.created_at).slice(0, 16))} · last used ${esc(String(k.last_used_at || '—').slice(5, 16))}</span>
+      ${k.revoked_at ? '<span class="tag">revoked</span>' : `<button class="b sec" data-axrev="${k.id}" data-axname="${esc(k.name)}">Revoke</button>`}</div>`).join('') || '<div class="dim">No keys yet.</div>'}
+    <div class="row mt"><input id="axName" class="grow" maxlength="40" placeholder="Key name — home-assistant, spreadsheet">
+      <button class="b" id="axAdd">Create key</button></div>
+    <div id="axNew" hidden><div class="dim mt">Copy it <b>now — it is shown once</b>:</div>
+      <div class="row mt"><code id="axTok" class="grow"></code><button class="b sec" id="axCopy">Copy</button></div></div>
+    <div class="dim mt" style="font-size:13px">Full reference: <a href="https://github.com/arbog/behavior-dashboard/blob/main/docs/api.md" target="_blank">docs/api.md</a></div></div>
+
   <div class="card"><h2>Security log</h2>
     <div class="dim">The last 50 security events: logins (good and bad), the setup, password changes, kiosk-code rotations, and every console write with its source IP. The log keeps its most recent 500 entries on the server.</div>
     <div class="mt">${sec.events.length ? sec.events.slice(0, 20).map(secRow).join('') : '<div class="dim">Nothing yet.</div>'}</div></div>`;
@@ -439,6 +451,17 @@ async function vSettings() {
   $('#view').querySelectorAll('[data-revoke]').forEach(b => b.onclick = async () => {
     if (!confirm(`Revoke “${b.dataset.label}”? That kiosk must be given a new code.`)) return;
     await api('DELETE', '/kiosk-devices/' + b.dataset.revoke); toast('Device revoked'); show();
+  });
+  $('#axAdd').onclick = async () => {
+    const out = await api('POST', '/api-keys', { name: $('#axName').value });
+    $('#axNew').hidden = false;
+    $('#axTok').textContent = out.key;
+    $('#axName').value = '';
+  };
+  $('#axCopy').onclick = async () => { await navigator.clipboard.writeText($('#axTok').textContent); toast('Copied'); };
+  $('#view').querySelectorAll('[data-axrev]').forEach(b => b.onclick = async () => {
+    if (!confirm(`Revoke the key “${b.dataset.axname}”? Anything using it will stop working.`)) return;
+    await api('DELETE', '/api-keys/' + b.dataset.axrev); toast('Key revoked'); show();
   });
   $('#ndCopy').onclick = async () => { await navigator.clipboard.writeText($('#ndTok').textContent); toast('Copied'); };
   $('#pwBtn').onclick = async () => {

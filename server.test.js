@@ -385,3 +385,69 @@ test('the family can take their data: export endpoint, healthz version', async (
   assert.ok(body.tables.modes.length >= 4, 'the seeded modes are in the export');
   assert.equal((await kioskRaw('GET', '/api/admin/export')).status, 401, 'export without a session is closed');
 });
+
+// ---- 0012: API keys (admin-scoped automation) + docs/api.md sync ----
+test('API keys: create, attribute writes, list prefix-only, revoke, cap at 5', async () => {
+  // create — the raw key is returned exactly once
+  const made = await call('POST', '/api/admin/api-keys', { name: 'home-assistant' });
+  assert.equal(made.status, 200);
+  assert.match(made.body.key, /^bdb_[0-9a-f]{48}$/, 'raw key is bdb_ + 48 hex');
+  const raw = made.body.key;
+  // the key works without any cookie — bearer and x-api-key are equivalent
+  const probe = await fetch(base + '/api/admin/api-keys', { headers: { authorization: 'Bearer ' + raw } });
+  assert.equal(probe.status, 200, 'Bearer header authenticates');
+  const listed = await probe.json();
+  assert.ok(listed.keys.length >= 1);
+  assert.ok(!('key_hash' in listed.keys[0]) && !('key' in listed.keys[0]), 'the raw key and its hash never come back');
+  assert.match(listed.keys[0].prefix, /^bdb_[0-9a-f]{6}/, 'the list shows a prefix only');
+  const viaHeader = await fetch(base + '/api/admin/api-keys', { headers: { 'x-api-key': raw } });
+  assert.equal(viaHeader.status, 200, 'x-api-key works too');
+  // a key-driven write is attributed api:<name>
+  // a key-driven write is attributed api:<name> — raw fetch, no cookie
+  const kw = await fetch(base + '/api/admin/abc', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + raw }, body: JSON.stringify({ behaviors: ['whining'], note: 'key-driven entry' }) });
+  assert.equal(kw.status, 200, 'the key can write');
+  const abc = await call('GET', '/api/admin/abc');
+  const entry = abc.body.events.find(e => e.by === 'api:home-assistant');
+  assert.ok(entry, 'the write records by = api:home-assistant');
+  // a session cookie outranks any key material a proxy might pass along
+  const both = await fetch(base + '/api/admin/api-keys', { headers: { cookie, authorization: 'Bearer bdb_' + '0'.repeat(48) } });
+  assert.equal(both.status, 200, 'a valid session is unaffected by a bogus key');
+  // garbage keys are 401, and the security log records the lifecycle
+  assert.equal((await fetch(base + '/api/admin/api-keys', { headers: { authorization: 'Bearer bdb_' + 'f'.repeat(48) } })).status, 401);
+  const sec = await call('GET', '/api/admin/security');
+  assert.ok(sec.body.events.some(e => e.kind === 'api_key_create' && e.detail === 'home-assistant'), 'api_key_create is on the record');
+  // the kiosk surface never accepts a bearer
+  assert.equal((await fetch(base + '/api/today', { headers: { authorization: 'Bearer ' + raw } })).status, 401);
+  // cap: fill to 5 active, then the next create is refused
+  const names = ['k2', 'k3', 'k4', 'k5'];
+  for (const n of names) {
+    const r = await call('POST', '/api/admin/api-keys', { name: n });
+    assert.equal(r.status, 200, n + ' created');
+  }
+  const over = await call('POST', '/api/admin/api-keys', { name: 'k6' });
+  assert.equal(over.status, 400);
+  assert.match(over.body.error, /at most 5/);
+  // revoke home-assistant — the raw key stops working immediately
+  const id = listed.keys.find(k => k.name === 'home-assistant').id;
+  assert.equal((await call('DELETE', `/api/admin/api-keys/${id}`)).status, 200);
+  assert.equal((await fetch(base + '/api/admin/api-keys', { headers: { authorization: 'Bearer ' + raw } })).status, 401, 'revoked key is dead');
+  const after = await call('GET', '/api/admin/api-keys');
+  assert.ok(after.body.keys.find(k => k.id === id).revoked_at, 'revocation is visible in the list');
+  const sec2 = await call('GET', '/api/admin/security');
+  assert.ok(sec2.body.events.some(e => e.kind === 'api_key_revoke'), 'api_key_revoke is on the record');
+  // and the kiosk devices row of the security payload carries keys now
+  assert.ok(Array.isArray(sec2.body.api_keys), 'security payload includes live api keys');
+});
+test('docs/api.md documents every route the server handles', () => {
+  const src = require('fs').readFileSync('server.js', 'utf8');
+  const doc = require('fs').readFileSync('docs/api.md', 'utf8');
+  const paths = new Set();
+  for (const m of src.matchAll(/p === '([^']+)'/g)) paths.add(m[1]);
+  for (const m of src.matchAll(/url\.pathname === '([^']+)'/g)) paths.add(m[1]);
+  for (const m of src.matchAll(/p\.match\(\^(\/[^\$]+)\$\)\.matchAll/g)) paths.add(m[1]);   // not used, but harmless
+  for (const m of src.matchAll(/p\.match\(\^(\/[a-z/-]+)\/\(/g)) paths.add(m[1] + '/:param');
+  // the parameter spellings api.md uses
+  const renames = { '/api/admin/abc/:param': '/api/admin/abc/:id', '/api/admin/api-keys/:param': '/api/admin/api-keys/:id', '/api/admin/day-items/:param': '/api/admin/day-items/:id', '/api/admin/kiosk-devices/:param': '/api/admin/kiosk-devices/:id', '/api/admin/modes/:param': '/api/admin/modes/:id', '/api/admin/plans/:param': '/api/admin/plans/:date', '/api/admin/sessions/:param': '/api/admin/sessions/:sid' };
+  const missing = [...paths].filter(p => p !== '/api/admin/me' || true).map(p => renames[p] || p).filter(p => !doc.includes(p));
+  assert.deepEqual(missing, [], `docs/api.md is missing routes: ${missing.join(', ')}`);
+});

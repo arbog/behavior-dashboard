@@ -99,6 +99,9 @@ CREATE TABLE IF NOT EXISTS security_events (
 CREATE TABLE IF NOT EXISTS kiosk_devices (
   id INTEGER PRIMARY KEY, label TEXT NOT NULL, token_hash TEXT NOT NULL,
   created_at TEXT NOT NULL, last_used_at TEXT DEFAULT '', revoked_at TEXT);
+CREATE TABLE IF NOT EXISTS api_keys (
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL, key_hash TEXT NOT NULL, prefix TEXT NOT NULL,
+  created_at TEXT NOT NULL, last_used_at TEXT DEFAULT '', revoked_at TEXT);
 `);
 
 // Bounded audit trail: what happened to the board's keys and who touched it.
@@ -542,6 +545,30 @@ function sessionUser(req) {
   return 'admin';
 }
 function adminAuthed(req) { return !!sessionUser(req); }
+
+// API keys: admin-scoped automation credentials (Authorization: Bearer bdb_…
+// or x-api-key:). They never touch the kiosk surface. Resolved only when no
+// session cookie is valid — a logged-in browser is unaffected by them.
+const API_KEYS_MAX = 5;
+const apiKeySeen = new Map();   // id -> ts of last throttled last_used write
+function resolveApiKey(req) {
+  const raw = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim()
+    || String(req.headers['x-api-key'] || '').trim();
+  if (!raw.startsWith('bdb_')) return null;
+  const got = Buffer.from(sha256(raw), 'hex');
+  for (const k of db.prepare('SELECT id, name, key_hash FROM api_keys WHERE revoked_at IS NULL').all()) {
+    const stored = Buffer.from(k.key_hash, 'hex');
+    if (stored.length === got.length && crypto.timingSafeEqual(stored, got)) {
+      const now = Date.now();
+      if (now - (apiKeySeen.get(k.id) || 0) > 60000) {
+        apiKeySeen.set(k.id, now);
+        try { db.prepare('UPDATE api_keys SET last_used_at=? WHERE id=?').run(tsNow(), k.id); } catch {}
+      }
+      return { id: k.id, name: k.name };
+    }
+  }
+  return null;
+}
 function kioskAuthed(req, url) {
   // The header is always accepted. The query string is only accepted for the
   // kiosk's initial GET /api/today — the deep-link affordance, and the one
@@ -883,7 +910,15 @@ function admin(req, res, url, body, user) {
   // Everything below requires an admin session — including the password
   // endpoints: changing the password, reading or rotating the kiosk token, and
   // every board-copy editor is session-gated on purpose.
-  if (!adminAuthed(req)) return json(res, 401, { error: 'admin login required' });
+  // An API key is the automation path to the same gate: it authenticates as
+  // 'api:<name>' (the audit's by field), and it never bypasses the limits.
+  let identity = 'admin';
+  if (!adminAuthed(req)) {
+    const key = resolveApiKey(req);
+    if (!key) return json(res, 401, { error: 'admin login required' });
+    identity = `api:${key.name}`;
+  }
+  user = identity;   // board writes record by 'api:<name>' for key-driven calls
   if (!rateLimit('admin:' + ip, 300, 60000)) { logEvent('admin_rate_limited', ip, p); return json(res, 429, { error: 'too many requests' }); }
   // The audit trail of the board itself: every authenticated mutation, where
   // it came from. (Reads are noise; writes are the record.)
@@ -930,10 +965,35 @@ function admin(req, res, url, body, user) {
   }
   // The audit trail itself: recent security events + who last used the kiosk
   // code. This is the card that answers "was the TV the only thing on it?".
+  // API keys: create (raw shown once), list (prefix only), revoke.
+  if (M === 'POST' && p === '/api/admin/api-keys') {
+    const name = clampStr(body.name, 40).trim();
+    if (!name) return json(res, 400, { error: 'a key name is required' });
+    if (db.prepare('SELECT COUNT(*) c FROM api_keys WHERE revoked_at IS NULL').get().c >= API_KEYS_MAX) {
+      return json(res, 400, { error: `keep at most ${API_KEYS_MAX} active keys — revoke one first` });
+    }
+    const raw = 'bdb_' + crypto.randomBytes(24).toString('hex');
+    const id = Number(db.prepare('INSERT INTO api_keys(name,key_hash,prefix,created_at,last_used_at) VALUES(?,?,?,?,?)')
+      .run(name, sha256(raw), raw.slice(0, 12), tsNow(), '').lastInsertRowid);
+    logEvent('api_key_create', ip, name);
+    return json(res, 200, { id, name, key: raw });   // the raw key is shown once
+  }
+  if (M === 'GET' && p === '/api/admin/api-keys') {
+    const keys = db.prepare('SELECT id,name,prefix,created_at,last_used_at,revoked_at FROM api_keys ORDER BY id').all();
+    return json(res, 200, { keys });
+  }
+  if (M === 'DELETE' && (m = p.match(/^\/api\/admin\/api-keys\/(\d+)$/))) {
+    const key = db.prepare('SELECT id,name FROM api_keys WHERE id=? AND revoked_at IS NULL').get(Number(m[1]));
+    if (!key) return json(res, 404, { error: 'no such active key' });
+    db.prepare('UPDATE api_keys SET revoked_at=? WHERE id=?').run(tsNow(), key.id);
+    logEvent('api_key_revoke', ip, key.name);
+    return json(res, 200, { ok: true, name: key.name });
+  }
   if (M === 'GET' && p === '/api/admin/security') {
     const events = db.prepare('SELECT ts,kind,ip,detail,ok FROM security_events ORDER BY id DESC LIMIT 50').all();
     const kiosk_devices = db.prepare('SELECT label,last_used_at FROM kiosk_devices WHERE revoked_at IS NULL ORDER BY id').all();
-    return json(res, 200, { kiosk_devices, events });
+    const api_keys = db.prepare('SELECT name,last_used_at FROM api_keys WHERE revoked_at IS NULL ORDER BY id').all();
+    return json(res, 200, { kiosk_devices, api_keys, events });
   }
   // The family's data, in one document they own. No redaction: it requires a
   // full admin session, and it is the human-readable half of the backup story
