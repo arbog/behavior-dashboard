@@ -41,6 +41,11 @@ What is deliberately not here yet, and the order we are thinking in.
 
 - In-memory rate-limit/lockout state (a restart clears a lockout). Fine for a
   family-scale app; revisit if managed hosting grows.
+- The security audit trail keeps 500 rows locally; export (CSV/JSON, alongside
+  the board data export) is the natural next step.
 - No per-IP allowlist; exposure is the deployer's decision by design.
+  `X-Forwarded-For` is trusted for the per-IP limits — correct behind a proxy
+  that sets it, and only fragments the limiter when spoofed open, which is a
+  DoS-of-the-limiter, not an auth bypass.
 - Single admin role (all parents share the one password). Multi-user with
   roles is not on the table yet — one instance, one family, one password.

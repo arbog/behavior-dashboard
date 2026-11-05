@@ -88,8 +88,13 @@ TLS, PaaS templates, and kiosk appliance notes, and
 The app is private by default and says so: the page shells are public (they
 carry no data), the kiosk's **board data** requires the kiosk code, and the
 console requires the admin password. Sessions are HttpOnly cookies; login is
-rate-limited with a 15-minute lockout after five failures; the kiosk code can
-be rotated any time from the console, which signs every device out. Everything
+rate-limited with a 15-minute lockout after five failures; changing the
+password signs out every session; the kiosk code can be rotated any time from
+the console, which signs every device out. Every security-relevant event —
+logins good and bad, password changes, rotations, console writes with their
+source IP — is kept in a bounded on-server audit log, shown in *Settings →
+Security log*, next to when the kiosk code was last used and from where.
+Over TLS, set `SECURE_COOKIES=1` for HSTS and Secure cookies. The whole model
 is in [docs/security-model.md](docs/security-model.md).
 
 ## Roadmap

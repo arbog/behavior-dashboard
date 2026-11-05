@@ -27,6 +27,11 @@ const { DatabaseSync } = require('node:sqlite');
 const PORT = Number(process.env.PORT || 3000);
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data', 'board.db');
 const PUBLIC_DIR = process.env.PUBLIC_DIR || path.join(__dirname, 'public');
+// SECURE_COOKIES=1: the app is served over TLS (PaaS, Cloudflare Tunnel,
+// reverse proxy). Sets the Secure flag on session cookies and sends HSTS.
+// Leave it unset for plain-HTTP LAN deploys, where a Secure cookie would
+// break the console.
+const SECURE = process.env.SECURE_COOKIES === '1';
 
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 const db = new DatabaseSync(DB_PATH);
@@ -65,7 +70,20 @@ CREATE TABLE IF NOT EXISTS day_plans (
   kind TEXT DEFAULT 'plan', label TEXT DEFAULT '', note TEXT DEFAULT '', by TEXT DEFAULT '');
 CREATE TABLE IF NOT EXISTS sessions (
   token_hash TEXT PRIMARY KEY, expires_at TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS security_events (
+  id INTEGER PRIMARY KEY, ts TEXT NOT NULL, kind TEXT NOT NULL,
+  ip TEXT DEFAULT '', detail TEXT DEFAULT '', ok INTEGER NOT NULL DEFAULT 1);
 `);
+
+// Bounded audit trail: what happened to the board's keys and who touched it.
+// Auth outcomes, admin writes, token rotation. Capped at the last 500 rows;
+// an audit failure must never take the app down.
+function logEvent(kind, ip, detail = '', ok = true) {
+  try {
+    db.prepare('INSERT INTO security_events(ts,kind,ip,detail,ok) VALUES(?,?,?,?,?)').run(tsNow(), kind, ip, clampStr(detail, 120), ok ? 1 : 0);
+    db.prepare('DELETE FROM security_events WHERE id < (SELECT MAX(id) - 500 FROM security_events)').run();
+  } catch (e) { console.error('security event log failed:', e.message); }
+}
 
 // Migrations for installs that predate a column.
 function addColumn(table, ddl) {
@@ -453,14 +471,32 @@ const verifyPassword = (pw, stored) => {
 const sha256 = s => crypto.createHash('sha256').update(String(s)).digest('hex');
 const parseCookies = req => Object.fromEntries(String(req.headers.cookie || '').split(';').map(p => p.trim().split(/=(.*)/)).filter(([k]) => k).map(([k, v]) => [k, decodeURIComponent(v)]));
 const SESSION_DAYS = 30;
+const COOKIE_SECURE = SECURE ? '; Secure' : '';
 
 function newSession() {
   const token = crypto.randomBytes(32).toString('hex');
   db.prepare('INSERT INTO sessions(token_hash,expires_at,created_at) VALUES(?,?,?)')
     .run(sha256(token), fmtTs(new Date(Date.now() + SESSION_DAYS * 864e5)), tsNow());
-  return `bd_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${SESSION_DAYS * 86400}`;
+  return `bd_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${SESSION_DAYS * 86400}` + COOKIE_SECURE;
 }
-const LOGOUT_COOKIE = 'bd_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0';
+const LOGOUT_COOKIE = 'bd_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0' + COOKIE_SECURE;
+
+// A small, static blocklist: what people actually try first. Not a substitute
+// for length and uniqueness — but "password123" should never get in.
+const WEAK_PASSWORDS = new Set([
+  'password', 'password1', 'password123', 'password1234', 'admin', 'admin1', 'admin123',
+  'admin1234', 'admin12345', 'letmein', 'letmein123', 'qwerty', 'qwerty123', '111111',
+  '12345678', '123456789', '1234567890', '12345678901', '12345678a', '1q2w3e4r', '1qaz2wsx',
+  'iloveyou', 'dragon', 'monkey', 'master', 'shadow', 'sunshine', 'princess', 'football',
+  'baseball', 'welcome', 'welcome1', 'login', 'pass123', 'abc123', 'changeme', 'secret',
+  'secret123', 'trustno1', 'freedom', 'whatever', 'q1w2e3r4', 'zaq12wsx', 'ninja', 'mustang',
+  'harley', 'ranger', 'hunter', 'killer', 'george', 'starwars', 'computer', 'internet',
+  'michael', 'jordan', 'harmony', 'superman', 'batman', 'spiderman', 'pokemon', 'matrix',
+  'behaviour', 'behavior', 'kiosk', 'kiosk123', 'board', 'board123', 'dashboard', 'baby',
+  'baby123', 'child', 'autism', 'aba', 'therapy', 'school', 'family', 'love', 'angel',
+  'hello', 'hello123', 'charlie', 'maggie', 'ginger', 'summer', 'winter', 'spring', 'autumn',
+]);
+const weakPassword = pw => { const p = String(pw || '').trim().toLowerCase(); return p.length < 8 || WEAK_PASSWORDS.has(p); };
 function sessionUser(req) {
   const t = parseCookies(req).bd_session;
   if (!t) return null;
@@ -473,9 +509,27 @@ function adminAuthed(req) { return !!sessionUser(req); }
 function kioskAuthed(req, url) {
   const t = getSetting('kiosk_token');
   if (!t) return false;
-  const presented = String(req.headers['x-kiosk-token'] || url.searchParams.get('token') || '').trim();
+  // The header is always accepted. The query string is only accepted for the
+  // kiosk's initial GET /api/today — the deep-link affordance, and the one
+  // place the code may appear in a URL (and therefore in proxy logs). Every
+  // write must carry the header, so taps never log the credential.
+  const presented = String(req.headers['x-kiosk-token'] ||
+    (req.method === 'GET' && url.pathname === '/api/today' ? url.searchParams.get('token') : null) || '').trim();
   if (!presented || presented.length !== t.length) return false;
   try { return crypto.timingSafeEqual(Buffer.from(presented), Buffer.from(t)); } catch { return false; }
+}
+
+// Who/when last used the kiosk code: the console shows it so a parent sees the
+// TV talking to the board. Throttled to one note a minute — the kiosk polls
+// every 8 seconds and the settings table is not a traffic log.
+let kioskSeenAt = 0;
+function noteKioskUse(ip) {
+  const now = Date.now();
+  // After a rotation (or a fresh install) the first use is noted immediately:
+  // "who has the new code" is the exact question the note exists to answer.
+  if (getSetting('kiosk_last_used') && now - kioskSeenAt < 60000) return;
+  kioskSeenAt = now;
+  setSetting('kiosk_last_used', `${tsNow()} from ${ip}`);
 }
 
 // In-memory sliding-window rate limits (per install; the app is single-user).
@@ -510,6 +564,7 @@ function clientIp(req) {
 // ---------- kiosk API (token-gated) ----------
 function kiosk(req, res, url, body) {
   if (!kioskAuthed(req, url)) return json(res, 401, { error: 'kiosk token required' });
+  noteKioskUse(clientIp(req));
   let m;
   if (req.method === 'GET' && url.pathname === '/api/today') return json(res, 200, todayPayload());
   // The child taps an activity: finished (toggle back allowed until a parent scores the rules).
@@ -696,47 +751,73 @@ function admin(req, res, url, body, user) {
     return json(res, getSetting('admin_hash') ? 401 : 200, { setup: !getSetting('admin_hash') });
   }
   if (M === 'POST' && p === '/api/admin/login') {
-    if (!rateLimit('login:' + ip, 10, 60000)) return json(res, 429, { error: 'too many attempts' });
+    if (!rateLimit('login:' + ip, 10, 60000)) { logEvent('login_fail', ip, 'rate limited'); return json(res, 429, { error: 'too many attempts' }); }
     const lo = loginAllowed(ip);
-    if (!lo.ok) return json(res, 423, { error: `locked; try again in ${Math.ceil((lo.until - Date.now()) / 60000)} min` });
+    if (!lo.ok) { logEvent('login_fail', ip, 'locked'); return json(res, 423, { error: `locked; try again in ${Math.ceil((lo.until - Date.now()) / 60000)} min` }); }
+    if (!getSetting('admin_hash')) {
+      // Equalize timing with the (expensive) scrypt path below: "not configured
+      // yet" must not be probeable faster than "wrong password".
+      crypto.scryptSync('timing-equalizer', 'timing-equalizer', 64);
+      logEvent('login_fail', ip, 'not configured');
+      return json(res, 401, { error: 'wrong password' });
+    }
     if (verifyPassword(clampStr(body.password, 200), getSetting('admin_hash'))) {
       lockouts.delete(ip);
+      logEvent('login_ok', ip);
       return json(res, 200, { ok: true }, { 'set-cookie': newSession() });
     }
     loginFailed(ip);
+    logEvent('login_fail', ip, 'wrong password');
     return json(res, 401, { error: 'wrong password' });
   }
   if (M === 'POST' && p === '/api/admin/setup') {
     if (getSetting('admin_hash')) return json(res, 409, { error: 'already configured' });
     if (!rateLimit('setup:' + ip, 10, 60000)) return json(res, 429, { error: 'too many attempts' });
     const pw = String(body.password || '');
-    if (pw.length < 8) return json(res, 400, { error: 'password must be at least 8 characters' });
+    if (weakPassword(pw)) return json(res, 400, { error: 'password is too common or too short — use 8+ characters that are not a dictionary word' });
     setSetting('admin_hash', hashPassword(pw));
     if (body.child_name != null) setSetting('child_name', clampStr(body.child_name, 40));
+    logEvent('setup', ip);
     return json(res, 200, { ok: true }, { 'set-cookie': newSession() });
-  }
-  if (M === 'POST' && p === '/api/admin/password') {
-    if (!verifyPassword(clampStr(body.current, 200), getSetting('admin_hash'))) return json(res, 403, { error: 'current password is wrong' });
-    const np = String(body.next || '');
-    if (np.length < 8) return json(res, 400, { error: 'new password must be at least 8 characters' });
-    setSetting('admin_hash', hashPassword(np));
-    return json(res, 200, { ok: true });
   }
   // Everything below requires an admin session — including the password
   // endpoints: changing the password, reading or rotating the kiosk token, and
   // every board-copy editor is session-gated on purpose.
   if (!adminAuthed(req)) return json(res, 401, { error: 'admin login required' });
-  if (!rateLimit('admin:' + ip, 300, 60000)) return json(res, 429, { error: 'too many requests' });
+  if (!rateLimit('admin:' + ip, 300, 60000)) { logEvent('admin_rate_limited', ip, p); return json(res, 429, { error: 'too many requests' }); }
+  // The audit trail of the board itself: every authenticated mutation, where
+  // it came from. (Reads are noise; writes are the record.)
+  if (M !== 'GET') logEvent('admin_write', ip, `${M} ${p}`);
 
   if (M === 'POST' && p === '/api/admin/logout') {
     const t = parseCookies(req).bd_session;
     if (t) db.prepare('DELETE FROM sessions WHERE token_hash=?').run(sha256(t));
+    logEvent('logout', ip);
     return json(res, 200, { ok: true }, { 'set-cookie': LOGOUT_COOKIE });
+  }
+  if (M === 'POST' && p === '/api/admin/password') {
+    if (!verifyPassword(clampStr(body.current, 200), getSetting('admin_hash'))) { logEvent('password_change', ip, 'wrong current', false); return json(res, 403, { error: 'current password is wrong' }); }
+    const np = String(body.next || '');
+    if (weakPassword(np)) return json(res, 400, { error: 'new password is too common or too short — use 8+ characters that are not a dictionary word' });
+    setSetting('admin_hash', hashPassword(np));
+    // A changed password invalidates every live session: any console that was
+    // left open on a borrowed phone is signed out the moment the password moves.
+    db.prepare('DELETE FROM sessions').run();
+    logEvent('password_change', ip);
+    return json(res, 200, { ok: true });
   }
   if (M === 'GET' && p === '/api/admin/token') return json(res, 200, { token: getSetting('kiosk_token') });
   if (M === 'POST' && p === '/api/admin/token/rotate') {
     setSetting('kiosk_token', crypto.randomBytes(24).toString('hex'));
+    setSetting('kiosk_last_used', null);
+    logEvent('token_rotate', ip);
     return json(res, 200, { token: getSetting('kiosk_token') });
+  }
+  // The audit trail itself: recent security events + who last used the kiosk
+  // code. This is the card that answers "was the TV the only thing on it?".
+  if (M === 'GET' && p === '/api/admin/security') {
+    const events = db.prepare('SELECT ts,kind,ip,detail,ok FROM security_events ORDER BY id DESC LIMIT 50').all();
+    return json(res, 200, { kiosk_last_used: getSetting('kiosk_last_used') || null, events });
   }
   if (M === 'PUT' && p === '/api/admin/identity') {
     setSetting('child_name', clampStr(body.child_name, 40));
@@ -979,6 +1060,9 @@ const SEC_HEADERS = {
   'content-security-policy': "default-src 'self'; style-src 'self' 'unsafe-inline'",
   'referrer-policy': 'no-referrer',
   'x-frame-options': 'DENY',
+  // HSTS only when the app knows it is behind TLS (SECURE_COOKIES=1): sending
+  // it on a plain-HTTP LAN deploy would brick every browser that visits.
+  ...(SECURE ? { 'strict-transport-security': 'max-age=31536000; includeSubDomains' } : {}),
 };
 const json = (res, code, body, extra = {}) => { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store', ...SEC_HEADERS, ...extra }); res.end(JSON.stringify(body)); };
 const readBody = req => new Promise((ok, bad) => {

@@ -355,7 +355,11 @@ function vWeek() {
 
 // ---------- Settings: identity, security, battery copy, rewards, protocol ----------
 async function vSettings() {
-  const tok = await api('GET', '/token');
+  const [tok, sec] = await Promise.all([api('GET', '/token'), api('GET', '/security')]);
+  const secRow = e => `<div class="row" style="padding:6px 0;border-bottom:1px solid var(--line);gap:10px">
+      <span class="dim" style="width:52px">${esc(String(e.ts).slice(5, 16))}</span>
+      <span style="width:140px;font-weight:600;${e.ok ? '' : 'color:var(--bad)'}">${esc(e.kind)}${e.ok ? '' : ' ✗'}</span>
+      <span class="dim grow">${esc(e.detail || '—')}</span><span class="dim" style="white-space:nowrap">${esc(e.ip)}</span></div>`;
   $('#view').innerHTML = `
   <div class="card"><h2>Child</h2>
     <div class="row"><input id="setName" class="grow" maxlength="40" value="${esc(cfg.identity.child_name)}" placeholder="Shown on the kiosk and in scripts">
@@ -367,7 +371,8 @@ async function vSettings() {
     <div class="row mt"><code id="tok" class="grow">${esc(tok.token)}</code><button class="b sec" id="tokCopy">Copy</button></div>
     <div class="row mt"><div class="grow"><input id="tokUrl" value="${location.origin.replace(/^http/, 'https')}?token=${esc(tok.token)}" readonly></div></div>
     <div class="dim mt" style="font-size:13px">That URL is what you open on the kiosk (edit the host to yours; the <code>?token=</code> is saved on the device the first time). Rotating the code below signs every kiosk out at once.</div>
-    <div class="mt"><button class="b del" id="tokRotate">Rotate kiosk code</button></div></div>
+    <div class="mt"><button class="b del" id="tokRotate">Rotate kiosk code</button></div>
+    <div class="dim mt" style="font-size:13px">Last used: ${sec.kiosk_last_used ? esc(sec.kiosk_last_used) : 'no kiosk has connected yet'}</div></div>
 
   <div class="card"><h2>Console password</h2>
     <div class="row"><input id="pwNow" type="password" class="grow" placeholder="Current password" autocomplete="current-password">
@@ -394,7 +399,11 @@ async function vSettings() {
     <div class="mt"><small class="dim">Hold the line</small><textarea id="pHold" rows="2">${esc(cfg.regulation.protocol.hold)}</textarea></div>
     <div class="mt"><small class="dim">Script with a named rule (<code>{name}</code>, <code>{rule}</code>)</small><textarea id="pSr" rows="2">${esc(cfg.regulation.protocol.script_rule)}</textarea></div>
     <div class="mt"><small class="dim">Script without one (<code>{name}</code>)</small><textarea id="pS" rows="2">${esc(cfg.regulation.protocol.script)}</textarea></div>
-    <div class="mt"><button class="b" id="pBtn2">Save protocol</button></div></div>`;
+    <div class="mt"><button class="b" id="pBtn2">Save protocol</button></div></div>
+
+  <div class="card"><h2>Security log</h2>
+    <div class="dim">The last 50 security events: logins (good and bad), the setup, password changes, kiosk-code rotations, and every console write with its source IP. The log keeps its most recent 500 entries on the server.</div>
+    <div class="mt">${sec.events.length ? sec.events.slice(0, 20).map(secRow).join('') : '<div class="dim">Nothing yet.</div>'}</div></div>`;
   $('#setNameBtn').onclick = async () => { await api('PUT', '/identity', { child_name: $('#setName').value }); toast(); };
   $('#tokCopy').onclick = async () => { await navigator.clipboard.writeText(tok.token); toast('Copied'); };
   $('#tokRotate').onclick = async () => {
