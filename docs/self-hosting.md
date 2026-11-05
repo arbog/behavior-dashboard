@@ -32,11 +32,14 @@ environment:
   - TZ=America/Los_Angeles
   - ADMIN_PASSWORD=${ADMIN_PASSWORD}
   - KIOSK_TOKEN=${KIOSK_TOKEN}   # optional; else one is generated
+  - SECURE_COOKIES=1             # set ONLY when served over TLS (PaaS, tunnel)
 ```
 
 `ADMIN_PASSWORD` skips the setup screen; `KIOSK_TOKEN` seeds the kiosk code.
 After first run, the database is the source of truth (change the password in
 the console; rotating the kiosk code invalidates the env value).
+`SECURE_COOKIES=1` adds the `Secure` cookie flag and HSTS — PaaS templates set
+it for you; a plain-HTTP LAN deploy must leave it off.
 
 ## Bare Node
 
@@ -52,7 +55,7 @@ Data goes to `./data/board.db` (override with `DB_PATH`). Port 3000
 | Situation | What to do |
 |---|---|
 | Kiosk and phone are on the LAN, you rarely need it away | Bind the port to the LAN (`"8080:3000"` or `0.0.0.0`) with a strong admin password + kiosk code. |
-| A parent is often away (school runs, work) | Put TLS in front. Options, easiest first: **Cloudflare Tunnel** (no open ports, free, works with the app's `X-Forwarded-For` handling), **Caddy** auto-TLS, or your router's reverse proxy. |
+| A parent is often away (school runs, work) | Put TLS in front. Options, easiest first: **Cloudflare Tunnel** (no open ports, free, works with the app's `X-Forwarded-For` handling), **Caddy** auto-TLS, or your router's reverse proxy. Set `SECURE_COOKIES=1` once TLS is in front — that is what earns you HSTS and Secure cookies. |
 | Full internet exposure, no reverse proxy | Don't. The app is private but it is not a hardened public service; get TLS and strong credentials first. |
 
 The app trusts `X-Forwarded-For` for per-IP rate limiting when it is present —

@@ -50,8 +50,24 @@ test('kiosk API is closed without (or with a wrong) token', async () => {
   assert.equal((await kioskRaw('GET', '/api/today', undefined, 'deadbeef')).status, 401);
   assert.equal((await kioskRaw('POST', '/api/today/choice', { label: 'x' })).status, 401);
   assert.equal((await kioskRaw('GET', '/api/today', undefined, kiosk.slice(0, 10))).status, 401, 'truncated token does not prefix-match');
-  // the token also rides the query string — how the kiosk deep-links itself
+  // the token rides the query string ONLY for the initial GET /api/today —
+  // the deep-link affordance, and the one place it may reach proxy logs
   assert.equal((await fetch(base + '/api/today?token=' + encodeURIComponent(kiosk))).status, 200);
+  const tapByQuery = await fetch(base + '/api/today/choice?token=' + encodeURIComponent(kiosk), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ label: 'TV' }) });
+  assert.equal(tapByQuery.status, 401, 'writes must carry the header, not the query');
+  assert.equal((await kioskRaw('POST', '/api/today/choice', { label: 'TV' }, kiosk)).status, 200, 'the header form still works');
+});
+test('responses carry the security header set (HSTS off without SECURE_COOKIES)', async () => {
+  const r = await fetch(base + '/');
+  const h = r.headers;
+  assert.equal(h.get('x-content-type-options'), 'nosniff');
+  assert.equal(h.get('x-frame-options'), 'DENY');
+  assert.match(h.get('content-security-policy'), /^default-src 'self'/);
+  assert.equal(h.get('referrer-policy'), 'no-referrer');
+  assert.equal(h.get('strict-transport-security'), null, 'HSTS must not fire on a plain-HTTP deploy');
+  const apiRes = await fetch(base + '/api/today', { headers: { 'x-kiosk-token': kiosk } });
+  assert.equal(apiRes.headers.get('x-content-type-options'), 'nosniff', 'API responses carry the set too');
+  assert.equal(apiRes.headers.get('x-frame-options'), 'DENY');
 });
 test('the kiosk token rotates', async () => {
   const old = kiosk;
@@ -62,14 +78,19 @@ test('the kiosk token rotates', async () => {
   assert.equal((await kioskRaw('GET', '/api/today', undefined, out.body.token)).status, 200);
   kiosk = out.body.token;
 });
-test('password change requires the current one and sticks', async () => {
+test('password change requires the current one, rejects weak ones, and kills every session', async () => {
   assert.equal((await call('POST', '/api/admin/password', { current: 'wrong', next: 'newer-password-1' })).status, 403, 'refused without the current password');
-  assert.equal((await call('POST', '/api/admin/password', { current: PW, next: 'short' })).status, 400, 'weak replacement refused');
-  const ch = await call('POST', '/api/admin/password', { current: PW, next: 'newer-password-1' });
-  assert.equal(ch.status, 200);
-  const lg = await call('POST', '/api/admin/logout');
-  assert.equal(lg.status, 200);
-  assert.equal((await call('GET', '/api/admin/config')).status, 401, 'logout dropped the session');
+  assert.equal((await call('POST', '/api/admin/password', { current: PW, next: 'short' })).status, 400, 'short replacement refused');
+  assert.equal((await call('POST', '/api/admin/password', { current: PW, next: 'password123' })).status, 400, 'common replacement refused');
+  // a second live session: a console left open on a borrowed phone
+  const login2 = await fetch(base + '/api/admin/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: PW }) });
+  assert.equal(login2.status, 200);
+  const cookie2 = login2.headers.get('set-cookie').split(';')[0];
+  assert.equal((await call('POST', '/api/admin/password', { current: PW, next: 'newer-password-1' })).status, 200);
+  const r2 = await fetch(base + '/api/admin/config', { headers: { cookie: cookie2 } });
+  assert.equal(r2.status, 401, 'the other session is dead too');
+  const r0 = await fetch(base + '/api/admin/config', { headers: { cookie } });
+  assert.equal(r0.status, 401, 'even the changing session is signed out');
   PW = 'newer-password-1';
   const login = await fetch(base + '/api/admin/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: PW }) });
   assert.equal(login.status, 200, 'the new password works on a fresh login');
@@ -227,6 +248,21 @@ test('day plans carry their name to the kiosk without clobbering marks', async (
   assert.ok(t.items.some(i => i.rules === 'x'), 'marks survived the plan');
   await call('DELETE', `/api/admin/plans/${today}`);
   await call('DELETE', `/api/admin/plans/${sat}`);
+});
+test('the security log records auth outcomes, admin writes, and kiosk use', async () => {
+  const { body } = await call('GET', '/api/admin/security');
+  const kinds = new Set(body.events.map(e => e.kind));
+  assert.ok(kinds.has('setup'), 'setup is on the record');
+  assert.ok(kinds.has('login_ok'), 'successful logins are on the record');
+  assert.ok(kinds.has('login_fail'), 'failed logins are on the record (with detail)');
+  assert.ok(kinds.has('admin_write'), 'admin mutations are on the record');
+  const write = body.events.find(e => e.kind === 'admin_write');
+  assert.match(write.detail, /^(POST|PUT|PATCH|DELETE) \/api\//);
+  assert.ok(body.events.every(e => e.ok === 0 || e.ok === 1));
+  assert.ok(body.events.length <= 50, 'the endpoint caps at 50');
+  assert.match(body.kiosk_last_used, /from /, 'the kiosk use note names the source IP');
+  // audit is gated like everything else on the console
+  assert.equal((await kioskRaw('GET', '/api/admin/security')).status, 401);
 });
 test('healthz stays open and proves the DB', async () => {
   const r = await kioskRaw('GET', '/healthz');
