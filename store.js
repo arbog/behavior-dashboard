@@ -88,7 +88,13 @@ function openStore({ dbPath, log = () => {} }) {
   fs.mkdirSync(dataDir, { recursive: true });
   const blobPath = path.join(dataDir, 'board.enc');
   const workDir = workDirFor(dataDir);
-  const workPath = path.join(workDir, path.basename(dbPath) + '.work');
+  // The working copy is keyed by the DATA DIRECTORY (hashed), not just the
+  // basename: two boards on the same machine — or two test suites running
+  // in parallel on the CI runner — share /dev/shm, and a basename collision
+  // means two SQLite processes on one file. The hash also scopes the
+  // working copy to one board when two encrypted stores coexist.
+  const dirTag = crypto.createHash('sha256').update(dataDir).digest('base64url').slice(0, 8);
+  const workPath = path.join(workDir, `${path.basename(dbPath)}.${dirTag}.work`);
   const want = process.env.BD_ENCRYPTION;
   const envPass = process.env.BD_PASSPHRASE;
 
