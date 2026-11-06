@@ -792,7 +792,7 @@ function clientIp(req) {
 // request, a parent's phone can hear about it. Fire-and-forget with a hard
 // timeout; a dead webhook must never block a child's tap.
 async function notifyRequest(label) {
-  const url = process.env.BD_WEBHOOK_URL;
+  const url = getSetting('webhook_url') || process.env.BD_WEBHOOK_URL;   // the family's setting outranks the host's env
   if (!url) return;
   try { await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ kind: 'request', label, child: childName(), ts: tsNow() }), signal: AbortSignal.timeout(5000) }); }
@@ -1302,6 +1302,26 @@ async function admin(req, res, url, body, user) {
     logEvent('oauth_unlink', ip, row.provider);
     return json(res, 200, { ok: true });
   }
+  // ---- 0021: the board's encryption key, held by the host — the family can
+  // see it (their backup unit is the blob + this passphrase) and rotate it.
+  // A plaintext-mode board has no key to reveal; a rotation changes the blob
+  // key in place, and the host must persist the response's value before the
+  // next restart (docs/managed.md §key rotation).
+  if (M === 'GET' && p === '/api/admin/key') {
+    return json(res, 200, {
+      encrypted: !!store.encrypted,
+      passphrase: store.encrypted ? store.getPassphrase() : null,
+      generated_by_host: !!process.env.BD_PASSPHRASE,
+      rotate_notice: 'The host must update its stored copy of this passphrase before the next restart, or the board will not boot. A lost passphrase means lost data — on purpose.',
+    });
+  }
+  if (M === 'POST' && p === '/api/admin/key/rotate') {
+    if (!store.encrypted) return json(res, 400, { error: 'this board is not encrypted — nothing to rotate' });
+    const next = String(body.passphrase || '');
+    try { store.reKey(next); } catch (e) { return json(res, 400, { error: e.message }); }
+    logEvent('key_rotate', ip, 'blob re-encrypted');
+    return json(res, 200, { ok: true, passphrase: store.getPassphrase(), keep_secret: 'update BD_PASSPHRASE (or the host secret store) to this value before the next restart' });
+  }
   if (M === 'GET' && p === '/api/admin/webauthn/credentials') {
     const keys = db.prepare('SELECT id,name,aaid,created_at,last_used_at,revoked_at FROM passkeys ORDER BY id').all();
     return json(res, 200, { keys, rp_id: rpId() });
@@ -1355,6 +1375,25 @@ async function admin(req, res, url, body, user) {
   // ---- 0017: the compliance controls ----
   // The requests log (research P2): what the child asked for, read as a
   // voice. Newest first, with the tally the family actually uses.
+  // Per-board webhook (0022): where request notifications go. The family's
+  // URL is theirs — validated shape, stored in the board's own settings.
+  if (M === 'PUT' && p === '/api/admin/webhook') {
+    const u = clampStr(body.url, 500).trim();
+    if (!u) {
+      setSetting('webhook_url', null);
+      logEvent('webhook_change', ip, 'cleared');
+      return json(res, 200, { ok: true, cleared: true });
+    }
+    try { const parsed = new URL(u); if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') throw 0; }
+    catch { return json(res, 400, { error: 'that is not an http(s) URL' }); }
+    setSetting('webhook_url', u);
+    logEvent('webhook_change', ip, u.replace(/\/(\/)?[^/]*$/, '/…').slice(0, 60));
+    return json(res, 200, { ok: true, url_prefix: u.slice(0, 28) + '…' });
+  }
+  if (M === 'GET' && p === '/api/admin/webhook') {
+    const u = getSetting('webhook_url') || '';
+    return json(res, 200, { configured: !!u, url_prefix: u ? u.slice(0, 28) + '…' : '', from_env: !u && !!process.env.BD_WEBHOOK_URL });
+  }
   if (M === 'GET' && p === '/api/admin/requests') {
     const days = Math.min(Number(url.searchParams.get('days')) || 7, 90);
     const since = fmtTs(new Date(Date.now() - days * 864e5));

@@ -88,7 +88,13 @@ function openStore({ dbPath, log = () => {} }) {
   fs.mkdirSync(dataDir, { recursive: true });
   const blobPath = path.join(dataDir, 'board.enc');
   const workDir = workDirFor(dataDir);
-  const workPath = path.join(workDir, path.basename(dbPath) + '.work');
+  // The working copy is keyed by the DATA DIRECTORY (hashed), not just the
+  // basename: two boards on the same machine — or two test suites running
+  // in parallel on the CI runner — share /dev/shm, and a basename collision
+  // means two SQLite processes on one file. The hash also scopes the
+  // working copy to one board when two encrypted stores coexist.
+  const dirTag = crypto.createHash('sha256').update(dataDir).digest('base64url').slice(0, 8);
+  const workPath = path.join(workDir, `${path.basename(dbPath)}.${dirTag}.work`);
   const want = process.env.BD_ENCRYPTION;
   const envPass = process.env.BD_PASSPHRASE;
 
@@ -176,12 +182,14 @@ function openStore({ dbPath, log = () => {} }) {
       return tag;
     } catch { return null; }
   };
-  const persist = () => {
+  let currentPass = pass;
+  const persist = (key = currentPass) => {
     if (!fs.existsSync(workPath)) return;
     const now = snapshot();
-    if (now === lastStat) return;   // nothing written since the last persist
+    if (now === lastStat && key === currentPass) return;   // nothing written since the last persist
     db.exec('PRAGMA wal_checkpoint(TRUNCATE);');
-    writeAtomic(blobPath, encryptBlob(fs.readFileSync(workPath), pass));
+    writeAtomic(blobPath, encryptBlob(fs.readFileSync(workPath), key));
+    currentPass = key;
     lastStat = snapshot();
   };
   // First boot of a fresh or migrated board: the blob must exist immediately.
@@ -189,6 +197,23 @@ function openStore({ dbPath, log = () => {} }) {
   log(`encryption: ON (${blobPath}, working copy in ${workDir}${recovered ? ', recovered unflushed state from a previous run' : ''})`);
   return {
     db, encrypted: true, blobPath, workPath, persist,
+    // Managed-tier promises (docs/managed.md): the parent can re-reveal the
+    // key with their passkey, and can rotate it — the blob re-encrypts in
+    // place. The host MUST update its stored secret (the response's value)
+    // before the next restart, or the board will not boot; that pairing is
+    // the rotation contract.
+    getPassphrase: () => currentPass,
+    reKey(next) {
+      if (typeof next !== 'string' || next.length < 8) throw new Error('the new passphrase must be at least 8 characters');
+      if (next === currentPass) throw new Error('that is already the key — pick a new one');
+      const oldPass = currentPass;
+      persist(next);   // re-encrypts the current work file with the new key
+      const fresh = fs.readFileSync(blobPath);
+      decryptBlob(fresh, next);   // GCM authenticity: the new key opens the new blob
+      let oldDead = false;
+      try { decryptBlob(fresh, oldPass); } catch { oldDead = true; }
+      if (!oldDead) throw new Error('rotation verification failed — the old key still opens the new blob');
+    },
     close() {
       try { persist(); } catch (e) { log(`final persist failed: ${e.message}`); }
       try { db.close(); } catch {}
