@@ -1,4 +1,6 @@
-# behavior-dashboard
+# KindBoard
+
+*(the code stays `behavior-dashboard`; the product is KindBoard — decided 2026-11-05, see docs/research/naming.md)*
 
 A self-hosted behavior board for one family: **the kiosk your child taps, and the
 console your protocol runs on**, in one small app that lives on your own server.

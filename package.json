@@ -1,5 +1,5 @@
 {
-  "name": "behavior-dashboard",
+  "name": "kindboard",
   "version": "0.1.0",
   "description": "Self-hosted behavior board: the kiosk your child taps, the console your protocol runs on. One app, one family, zero dependencies.",
   "main": "server.js",

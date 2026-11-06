@@ -35,7 +35,7 @@ Concretely, per family:
 |---|---|
 | **Container** | One instance of the public image, in its own Kubernetes namespace, with its own resource limits and network policy. Your board cannot open a connection to another family's board, and neither can we say "oops, cross-tenant query" — the architecture makes it unpronounceable. |
 | **Database** | One SQLite file on a dedicated persistent volume, encrypted at rest (the whole-DB blob, `0018`) with a passphrase generated for your board. |
-| **Domain** | `https://<yourname>.board.arbog.xyz` — a real subdomain per family, so your **passkeys are bound to your own origin**. WebAuthn credentials only work on the exact domain they were created for; that is a feature, and it is why per-family subdomains are non-negotiable. (A family may point its own subdomain at its board later; see "what changing your domain means", below.) |
+| **Domain** | `https://<yourname>.board.kindboard.app` — a real subdomain per family, so your **passkeys are bound to the board's shared origin**: the RP-ID is `board.kindboard.app`, a registrable suffix of every family board's host, and credential lookup is per board — so your passkey only works on *your* board. That is why per-family subdomains are non-negotiable. (A family may point its own subdomain at its board later; see "what changing your domain means", below.) |
 | **TLS** | Terminated at the edge, wildcard certificate per managed domain. `SECURE_COOKIES=1` is on. |
 | **Backups** | The encrypted blob is copied off the cluster on a schedule. Because it is ciphertext, a leaked backup is a useless file (research: `docs/research/encryption.md`). Backups are purged on a 30-day rolling window, and when a family deletes their board, the backups go with it inside that window. |
 | **Secrets** | Your board's passphrase and setup token live in our OpenBao instance (an open-source vault), scoped to your board, never in the repository or the container image. |
@@ -182,6 +182,8 @@ we would rather be late than over-compliant-in-reverse.
   works technically (per-board TLS cert), changes the RP-ID story for
   passkeys — needs the wizard to say "changing your domain signs out all
   passkeys" loudly.
+- The `kindboard.app` domain: registered by the operator at launch; the
+  wildcard cert covers `*.board.kindboard.app` (the per-family tier).
 - Recovery codes / a second key holder: out of scope for v1; a lost
   passphrase on the managed tier is recoverable by us (we hold it), which is
   the trade for the trust model above.
