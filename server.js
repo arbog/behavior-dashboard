@@ -136,6 +136,11 @@ CREATE TABLE IF NOT EXISTS passkeys (
 -- a deletion record is the one thing a deletion request must leave behind.
 CREATE TABLE IF NOT EXISTS consents (
   id INTEGER PRIMARY KEY, who TEXT NOT NULL, what TEXT NOT NULL, ip TEXT DEFAULT '', ts TEXT NOT NULL);
+-- Requests (wave 6, research P2): what the child asked for, when. A tap on
+-- the communication board is a voice, not a behavior — the log reads
+-- "Sam said BREAK at 14:02", never an entry in the ABC form.
+CREATE TABLE IF NOT EXISTS requests (
+  id INTEGER PRIMARY KEY, ts TEXT NOT NULL, label TEXT NOT NULL, by TEXT DEFAULT 'kiosk');
 `);
 
 // Bounded audit trail: what happened to the board's keys and who touched it.
@@ -158,6 +163,9 @@ addColumn('day_items', 'rule_id INTEGER');
 addColumn('days', "plan_label TEXT DEFAULT ''");
 addColumn('days', "plan_note TEXT DEFAULT ''");
 addColumn('days', "plan_kind TEXT DEFAULT ''");
+// Self-report (research P3): the child's own 1–5 worry scale, tapped on the
+// kiosk. Kept beside the parent-logged levels, attributed by='kiosk'.
+addColumn('check_ins', 'self_report INTEGER');
 addColumn('sessions', "last_seen TEXT DEFAULT ''");
 
 // ---------- defaults (neutral starting points; all editable in /admin) ----------
@@ -520,8 +528,9 @@ const PROFILE_PRESETS = {
 // Choices are the floor's voice (every profile enables them); schedule, plans
 // and the calendar are unconditional too.
 const profileFlags = id => {
-  const f = Object.fromEntries(['choices', ...CAPS].map(c => [c, false]));   // choices: the floor's voice
+  const f = Object.fromEntries(['choices', 'requests', ...CAPS].map(c => [c, false]));   // choices: the floor's voice
   f.choices = true;
+  f.requests = (PROFILE_PRESETS[id] || PROFILE_PRESETS.standard) === PROFILE_PRESETS.communication;   // P2: taps are requests
   (PROFILE_PRESETS[id] || PROFILE_PRESETS.standard).on.forEach(c => { f[c] = true; });
   return f;
 };
@@ -747,6 +756,16 @@ function clientIp(req) {
 }
 
 // ---------- kiosk API (token-gated) ----------
+// Optional outbound notification (research item 9): when the child taps a
+// request, a parent's phone can hear about it. Fire-and-forget with a hard
+// timeout; a dead webhook must never block a child's tap.
+async function notifyRequest(label) {
+  const url = process.env.BD_WEBHOOK_URL;
+  if (!url) return;
+  try { await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ kind: 'request', label, child: childName(), ts: tsNow() }), signal: AbortSignal.timeout(5000) }); }
+  catch {}
+}
 function kiosk(req, res, url, body) {
   if (!kioskAuthed(req, url)) return json(res, 401, { error: 'kiosk token required' });
   noteKioskUse(clientIp(req));
@@ -763,6 +782,30 @@ function kiosk(req, res, url, body) {
   if (req.method === 'POST' && url.pathname === '/api/today/choice') {
     db.prepare('UPDATE days SET working_for=? WHERE date=?').run(clampStr(body.label, 80), ensureDay());
     return json(res, 200, todayPayload());
+  }
+  // A tap that SAYS something (research P2): on the communication board the
+  // choice buttons are requests. Logged as what the child asked for — never
+  // a behavior — and, when BD_WEBHOOK_URL is set, pushed to the parent.
+  if (req.method === 'POST' && url.pathname === '/api/today/request') {
+    const greq = need('requests', res); if (greq) return greq;
+    if (!rateLimit('kiosk-req:' + clientIp(req), 60, 60000)) return json(res, 429, { error: 'too many requests' });
+    const label = clampStr(body.label, 80);
+    const known = db.prepare('SELECT label FROM choices ORDER BY position,id').all().some(c => c.label === label);
+    if (!known) return json(res, 400, { error: 'not a button on this board' });
+    db.prepare("INSERT INTO requests(ts,label,by) VALUES(?,?,'kiosk')").run(tsNow(), label);
+    notifyRequest(label);   // fire-and-forget: a dead webhook never delays a child's tap
+    return json(res, 200, { ok: true, ts: tsNow() });
+  }
+  // The child's own check-in (research P3): a 1–5 worry scale tapped on the
+  // kiosk. It is a check-in like any other — attributed by='kiosk' — and it
+  // counts toward a pause resume exactly as a parent's does.
+  if (req.method === 'POST' && url.pathname === '/api/today/checkin') {
+    const gchk = need('checkins', res); if (gchk) return gchk;
+    const level = toInt(body.level);
+    if (level == null || level < 1 || level > 5) return json(res, 400, { error: 'level must be 1 through 5' });
+    if (!rateLimit('kiosk-chk:' + clientIp(req), 30, 60000)) return json(res, 429, { error: 'too many requests' });
+    db.prepare("INSERT INTO check_ins(ts,hunger,boredom,house,self_report,by) VALUES(?,0,0,0,?,'kiosk')").run(tsNow(), level);
+    return json(res, 200, { ok: true });
   }
   // Tapping a tool is a tool use: it counts toward the rule that reinforcement
   // resumes only after a check-in AND a tool — the one thing to reach for.
@@ -1176,6 +1219,16 @@ function admin(req, res, url, body, user) {
     return json(res, 200, { kiosk_devices, api_keys, events, retention_months: getSetting('retention_months') == null ? 12 : Number(getSetting('retention_months')) });
   }
   // ---- 0017: the compliance controls ----
+  // The requests log (research P2): what the child asked for, read as a
+  // voice. Newest first, with the tally the family actually uses.
+  if (M === 'GET' && p === '/api/admin/requests') {
+    const days = Math.min(Number(url.searchParams.get('days')) || 7, 90);
+    const since = fmtTs(new Date(Date.now() - days * 864e5));
+    const items = db.prepare('SELECT ts,label,by FROM requests WHERE ts>=? ORDER BY id DESC LIMIT 200').all(since);
+    const tally = {};
+    for (const r of items) tally[r.label] = (tally[r.label] || 0) + 1;
+    return json(res, 200, { requests: items, tally: Object.entries(tally).sort((a, b) => b[1] - a[1]) });
+  }
   // The consent artifact: who acknowledged what, when, from where.
   if (M === 'GET' && p === '/api/admin/consent') {
     return json(res, 200, { consents: db.prepare('SELECT who,what,ip,ts FROM consents ORDER BY id').all() });

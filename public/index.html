@@ -218,7 +218,8 @@
   <section class="cal" id="cal"></section>
   <div class="banner hollow" id="banner"></div>
   <footer>
-    <div class="card choice"><h3 class="hd">I am working for…</h3><div class="chips" id="chips"></div></div>
+    <div class="card choice"><h3 class="hd" id="choiceHd">I am working for…</h3><div class="chips" id="chips"></div></div>
+    <div class="card tools" id="feelCard" hidden><h4 class="hd">How are my feelings?</h4><div class="chips" id="feel"></div></div>
     <div class="card tools"><h4 class="hd">My tools for big feelings</h4><div class="chips" id="tools"></div></div>
     <div class="card earn" id="earn"></div>
     <div class="why" id="why"></div>
@@ -355,8 +356,21 @@ function render() {
   ban.textContent = said;
   $('why').innerHTML = C.rewards ? S.rewards.map(r => `<div>• ${esc(r)}</div>`).join('') : '';
   $('why').style.display = C.rewards ? '' : 'none';
-  $('chips').innerHTML = S.choices.map(c => `<button class="chip ${S.day.working_for === c.label ? 'sel' : ''}" data-l="${esc(c.label)}">${esc(c.icon)} ${esc(c.label)}</button>`).join('');
-  $('chips').querySelectorAll('.chip').forEach(b => b.onclick = () => post('/api/today/choice', { label: S.day.working_for === b.dataset.l ? '' : b.dataset.l }));
+  // Communication mode (caps.requests): the buttons SAY things. A tap is a
+  // request the parents see — not a choice the day records.
+  const reqMode = !!C.requests;
+  $('choiceHd').textContent = reqMode ? 'Say it…' : 'I am working for…';
+  $('chips').innerHTML = S.choices.map(c => `<button class="chip ${!reqMode && S.day.working_for === c.label ? 'sel' : ''}" data-l="${esc(c.label)}">${esc(c.icon)} ${esc(c.label)}</button>`).join('');
+  $('chips').querySelectorAll('.chip').forEach(b => b.onclick = () => reqMode
+    ? post('/api/today/request', { label: b.dataset.l })
+    : post('/api/today/choice', { label: S.day.working_for === b.dataset.l ? '' : b.dataset.l }));
+  // Self-report (caps.checkins): a 1–5 worry scale the child taps themselves.
+  if (C.checkins) {
+    $('feelCard').hidden = false;
+    const faces = ['😄', '🙂', '😐', '😟', '😣'];
+    $('feel').innerHTML = faces.map((f, i) => `<button class="chip" data-l="${i + 1}">${f}</button>`).join('');
+    $('feel').querySelectorAll('.chip').forEach(b => b.onclick = () => post('/api/today/checkin', { level: Number(b.dataset.l) }));
+  }
   const r = S.reward;
   const tierTxt = { all: 'ALL CHECKS! 🌟', one: '1 X', two: '2 or more X' }[r.tier];
   $('earn').innerHTML = C.rewards ? `<h3 class="hd">Time I earned</h3>
@@ -368,7 +382,11 @@ async function post(url, body) {
   try {
     const r = await fetch(url, { method: 'POST', headers: apiHeaders(), body: JSON.stringify(body) });
     if (r.status === 401) { showGate(); return; }
-    S = await r.json(); render();
+    if (!r.ok) return;
+    const j = await r.json();
+    if (url === '/api/today/request') { S = Object.assign({}, j.ok ? S : j, { calmMsg: '✓ They heard you.' }); render(); clearTimeout(post.t); post.t = setTimeout(() => { S.calmMsg = ''; render(); }, 7000); return; }
+    if (url === '/api/today/checkin') { S = Object.assign({}, S, { calmMsg: 'Thank you for telling me.' }); render(); clearTimeout(post.t); post.t = setTimeout(() => { S.calmMsg = ''; render(); }, 7000); return; }
+    S = j; render();
   } catch {}
 }
 // Using a tool is the thing we want them reaching for, so it gets its own
