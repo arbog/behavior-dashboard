@@ -135,6 +135,10 @@ Security & data:
 | `POST /api/admin/api-keys` | `{name}` → `{id, name, key}` — **key shown once** (max 5 active) |
 | `GET /api/admin/api-keys` | keys (prefix only) |
 | `DELETE /api/admin/api-keys/:id` | revoke a key |
+| `GET /api/admin/key` | the board's encryption status + passphrase — re-revealable by design (`docs/managed.md`); `null` on plaintext boards |
+| `POST /api/admin/key/rotate` | `{passphrase}` — re-encrypts the blob in place; the host must store the response's value before the next restart |
+| `PUT /api/admin/webhook` | `{url}` — where request taps go (per-board, overrides the host env); `{url: ''}` clears |
+| `GET /api/admin/webhook` | webhook status (`{configured, url_prefix, from_env}`) |
 | `GET /api/admin/export` | every table as one dated JSON attachment |
 | `GET /api/admin/consent` | the consent artifact(s) — kind (`self_host_ack` / `vpc_kba`), what, who, when, contact |
 | `PUT /api/admin/retention` | `{months}` 0–60 — how many months of raw events (ABC, battery, tools, check-ins) to keep; 0 keeps everything; prunes on save, hourly after |

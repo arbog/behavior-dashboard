@@ -512,7 +512,7 @@ function vWeek() {
 
 // ---------- Settings: identity, security, battery copy, rewards, protocol ----------
 async function vSettings() {
-  const [sec, sess, kdev, pk, pkc, oid, opv] = await Promise.all([api('GET', '/security'), api('GET', '/sessions'), api('GET', '/kiosk-devices'), api('GET', '/webauthn/credentials').catch(() => ({ keys: [] })), api('GET', '/consent'), api('GET', '/oauth/identities').catch(() => ({ identities: [] })), fetch('/api/admin/oauth/providers').then(r => r.json()).catch(() => ({ providers: [] }))]);
+  const [sec, sess, kdev, pk, pkc, oid, opv, keyinfo, hook] = await Promise.all([api('GET', '/security'), api('GET', '/sessions'), api('GET', '/kiosk-devices'), api('GET', '/webauthn/credentials').catch(() => ({ keys: [] })), api('GET', '/consent'), api('GET', '/oauth/identities').catch(() => ({ identities: [] })), fetch('/api/admin/oauth/providers').then(r => r.json()).catch(() => ({ providers: [] })), api('GET', '/key'), api('GET', '/webhook').catch(() => ({}))]);
   const secRow = e => `<div class="row" style="padding:6px 0;border-bottom:1px solid var(--line);gap:10px">
       <span class="dim" style="width:52px">${esc(String(e.ts).slice(5, 16))}</span>
       <span style="width:140px;font-weight:600;${e.ok ? '' : 'color:var(--bad)'}">${esc(e.kind)}${e.ok ? '' : ' ✗'}</span>
@@ -587,6 +587,21 @@ async function vSettings() {
         ${p.id === cfg.profile.id ? '' : `<button class="b sec" data-preset="${p.id}">Use this</button>`}</div>`).join('')}
     </div>
     <div class="mt"><button class="b sec" id="wizBtn">Run the family walkthrough</button></div></div>
+
+  ${keyinfo.encrypted ? `<div class="card"><h2>Encryption key</h2>
+    <div class="dim">The board's data lives in one encrypted blob. This passphrase is the only key — a lost passphrase means lost data, on purpose. Keep it somewhere safe; your host also holds a copy (that is the managed-tier trade, documented).</div>
+    <div class="row mt"><code id="keyShow" class="grow" style="visibility:hidden">${esc(keyinfo.passphrase || '')}</code>
+      <button class="b sec" id="keyReveal">Reveal</button></div>
+    <div class="mt"><small class="dim">Rotate it — the board re-encrypts immediately. Your host must update its stored copy before the next restart; the new value appears after rotating.</small></div>
+    <div class="row mt"><input id="keyNew" class="grow" type="text" autocomplete="off" placeholder="new passphrase (8+ characters)">
+      <button class="b" id="keyRotate">Rotate</button></div></div>` : ''}
+
+  <div class="card"><h2>Request notifications</h2>
+    <div class="dim">Where the kiosk's request taps go — ${hook.from_env ? 'currently the host\'s default webhook. ' : ''}Every “say it” tap is POSTed here as JSON, so your phone or dashboard can light up.</div>
+    <div class="row mt"><input id="hookUrl" class="grow" placeholder="https://your-hook.example/notify" value="">
+      ${hook.configured ? `<span class="dim" style="font-size:13px">set: <code>${esc(hook.url_prefix)}</code></span>` : ''}
+      <button class="b" id="hookSave">Save</button>
+      ${hook.configured || hook.from_env ? '<button class="b sec" id="hookClear">Clear</button>' : ''}</div></div>
 
   <div class="card"><h2>Linked accounts</h2>
     <div class="dim">Sign in with Apple or Google — a third way to obtain the same session. The provider sees only that your browser visited; none of your child's data ever leaves the board for it. Link while signed in; a new provider sign-in cannot create an account by itself.</div>
@@ -683,6 +698,16 @@ async function vSettings() {
     if (!confirm(`Remove the passkey “${b.dataset.pkname}”? The password still works.`)) return;
     await api('DELETE', '/webauthn/credentials/' + b.dataset.pkrev); toast('Passkey removed'); show();
   });
+  $('#keyReveal').onclick = () => { const e = $('#keyShow'); e.style.visibility = e.style.visibility === 'hidden' ? 'visible' : 'hidden'; };
+  $('#keyRotate').onclick = async () => {
+    const next = $('#keyNew').value;
+    if (!confirm('Rotate the encryption key now? The board re-encrypts immediately, and your host must store the new passphrase before the next restart.')) return;
+    try { const out = await api('POST', '/key/rotate', { passphrase: next }); toast('Rotated — new passphrase: ' + out.passphrase.slice(0, 4) + '… (see the key card)'); show(); } catch {}
+  };
+  $('#hookSave').onclick = async () => {
+    try { await api('PUT', '/webhook', { url: $('#hookUrl').value }); toast('Saved'); show(); } catch {}
+  };
+  $('#hookClear').onclick = async () => { await api('PUT', '/webhook', { url: '' }); toast('Cleared'); show(); };
   $('#rtSave').onclick = async () => {
     try { const out = await api('PUT', '/retention', { months: Number($('#rtMonths').value) }); toast(out.pruned ? `${out.pruned} old rows pruned` : 'Saved'); show(); } catch {}
   };
