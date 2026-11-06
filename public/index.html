@@ -335,10 +335,15 @@ function render() {
   // The week ahead, and what today is. The banner is one slot: a paused reward
   // outranks the day's plan, which outranks a tool just used.
   // today filled, the days behind it quiet, a planned day in its own colour
-  $('cal').innerHTML = S.calendar.map(d => `
-    <div class="d ${d.is_today ? 'on' : ''} ${!d.is_today && d.date < S.date ? 'past' : ''} ${d.source === 'plan' ? 'plan' : ''}"
-      style="${d.source === 'plan' ? `border-color:${d.color}` : ''}">
-      <b>${d.is_today ? 'Today' : d.day_name}</b><span>${esc(d.emoji)}<i class="nm"> ${esc(d.label || d.mode_name)}</i></span></div>`).join('');
+  const evByDay = {};
+  (S.events || []).forEach(e => { (evByDay[e.date] = evByDay[e.date] || []).push(e); });
+  $('cal').innerHTML = S.calendar.map(d => {
+    const evs = evByDay[d.date] || [];
+    const evNote = evs.length ? `<i class="nm ev" style="color:var(--dim);font-style:normal;font-size:1.3vmin">${esc(evs[0].summary)}${evs.length > 1 ? ` +${evs.length - 1}` : ''}</i>` : '';
+    return `<div class="d ${d.is_today ? 'on' : ''} ${!d.is_today && d.date < S.date ? 'past' : ''} ${d.source === 'plan' ? 'plan' : ''}"
+      style="${d.source === 'plan' ? `border-color:${d.color}` : ''}${evs.length ? ';border-style:dashed' : ''}">
+      <b>${d.is_today ? 'Today' : d.day_name}</b><span>${esc(d.emoji)}<i class="nm"> ${esc(d.label || d.mode_name)}</i></span>${evNote}</div>`;
+  }).join('');
   // Today's plan gets the banner; the strip already counts out what's next.
   const planNote = S.plan && (S.plan.label || S.plan.note)
     ? `${S.mode.emoji || ''} ${S.plan.label || 'A different kind of day'}`

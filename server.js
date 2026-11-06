@@ -23,6 +23,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const { b64u, b64uToBuf, sha256: wSha256, cborDecode, coseKey, parseAuthData, newChallenge, takeChallenge, checkClientData } = require('./webauthn.js');
 const { PROVIDERS: OAUTH_PROVIDERS, cfgFor: oauthCfgFor } = require('./oauth.js');
+const { parseIcs, fetchFeed: fetchIcsFeed, withinWindow: icsWithinWindow } = require('./ics.js');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
@@ -146,6 +147,12 @@ CREATE TABLE IF NOT EXISTS requests (
 -- the provider (Apple/Google) vouches for the PARENT's identity; no child
 -- data ever leaves the board for it. Linked only by a signed-in parent;
 -- sign-in works only for an already-linked identity.
+-- Calendar subscription (0024): the parsed events from the family's
+-- private iCal feed (Apple or Google — see docs/integrations.md). The
+-- board pulls; nothing is ever pushed to the calendar.
+CREATE TABLE IF NOT EXISTS calendar_events (
+  id INTEGER PRIMARY KEY, uid TEXT NOT NULL, summary TEXT NOT NULL, location TEXT DEFAULT '',
+  start_ts TEXT NOT NULL, end_ts TEXT, all_day INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS oauth_identities (
   id INTEGER PRIMARY KEY, provider TEXT NOT NULL, sub TEXT NOT NULL, email TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL, last_used_at TEXT DEFAULT '', revoked_at TEXT, UNIQUE(provider, sub));
@@ -556,6 +563,19 @@ const cap = c => profile()[c];
 // not a bug to debug — it is 404, the same shape as an unknown route.
 const need = (c, res) => cap(c) ? null : json(res, 404, { error: 'that part of the board is switched off in this profile' });
 
+// The parsed feed's events for today ± 7 days, grouped by local date —
+// what the kiosk calendar band can mark.
+function calendarEvents(date) {
+  const lo = new Date(date + 'T12:00:00'); const out = [];
+  for (let i = -1; i <= 7; i++) {
+    const d = new Date(lo); d.setDate(d.getDate() + i);
+    const day = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    for (const e of db.prepare('SELECT uid,summary,location,start_ts,all_day FROM calendar_events WHERE start_ts LIKE ? ORDER BY start_ts').all(day + ' %'))
+      out.push({ date: day, summary: e.summary, location: e.location, all_day: e.all_day, start: e.start_ts });
+  }
+  return out;
+}
+
 function todayPayload() {
   const date = ensureDay();
   const { time } = localParts();
@@ -570,7 +590,7 @@ function todayPayload() {
   return {
     date, time, day, mode: mode || { name: day?.mode_name || '', emoji: '', color: '#4f8cff' },
     items: items.map(i => ({ ...i, status: itemStatus(i) })), reward: day ? reward(day, items) : null, choices,
-    caps: flags, ...(!b ? {} : { battery: batteryView(batteryLines()) }),
+    caps: flags, ...(!b ? {} : { battery: batteryView(batteryLines()) }), events: calendarEvents(date),
     rules: cap('rules') ? rules : [], tools: cap('tools') ? tools.map(t => ({ ...t, used: used.has(t.id) })) : [],
     ...(!b || !cap('pause') ? {} : { pause: pauseState() }), rewards: cap('rewards') ? rewards() : [], child_name: childName(),
     plan: day ? { label: day.plan_label || '', note: day.plan_note || '', kind: day.plan_kind || '' } : null,
@@ -1293,6 +1313,27 @@ async function admin(req, res, url, body, user) {
     return json(res, 200, { requests: items, tally: Object.entries(tally).sort((a, b) => b[1] - a[1]) });
   }
   // The consent artifact: who acknowledged what, when, from where.
+  // Calendar subscription (0024): the family pastes their private iCal URL
+  // (Apple or Google). Saved → fetched → parsed immediately; empty clears.
+  if (M === 'PUT' && p === '/api/admin/calendar-feed') {
+    const url = clampStr(body.url, 500).trim();
+    if (!url) {
+      tx(() => { db.prepare('DELETE FROM calendar_events').run(); setSetting('ics_url', null); setSetting('ics_state', null); });
+      logEvent('calendar_feed', ip, 'removed');
+      return json(res, 200, { ok: true, cleared: true });
+    }
+    setSetting('ics_url', url);
+    await syncCalendarFeed();
+    const st = JSON.parse(getSetting('ics_state') || '{}');
+    if (st.error) { logEvent('calendar_feed', ip, 'error: ' + st.error, false); return json(res, 400, { error: st.error, kept: st.count || 0 }); }
+    logEvent('calendar_feed', ip, `${st.count} events`);
+    return json(res, 200, { ok: true, count: st.count, fetched_at: st.fetched_at });
+  }
+  if (M === 'GET' && p === '/api/admin/calendar-feed') {
+    const st = JSON.parse(getSetting('ics_state') || '{}');
+    const url = getSetting('ics_url') || '';
+    return json(res, 200, { configured: !!url, url_prefix: url ? url.slice(0, 28) + '…' : '', fetched_at: st.fetched_at || null, count: calendarCount(), error: st.error || '' });
+  }
   if (M === 'GET' && p === '/api/admin/consent') {
     return json(res, 200, { consents: db.prepare('SELECT who,what,ip,ts FROM consents ORDER BY id').all() });
   }
@@ -1713,6 +1754,36 @@ function pruneRetention() {
   return n;
 }
 setInterval(() => { try { pruneRetention(); } catch {} }, 3600e3).unref();
+// Calendar feed sync (0024): on save, on boot, and every 6 h. A failed
+// fetch keeps the last good events and records the error — the kiosk never
+// goes blank because someone's calendar had a bad day.
+async function syncCalendarFeed() {
+  const url = getSetting('ics_url');
+  if (!url) return;
+  const state = () => { try { return JSON.parse(getSetting('ics_state') || '{}'); } catch { return {}; } };
+  try {
+    const events = parseIcs(await fetchIcsFeed(url));
+    applyCalendarEvents(events);
+    setSetting('ics_state', JSON.stringify({ fetched_at: tsNow(), count: events.length, error: '' }));
+  } catch (e) {
+    const prev = state();
+    setSetting('ics_state', JSON.stringify({ fetched_at: prev.fetched_at || null, count: calendarCount(), error: String(e.message || e).slice(0, 200) }));
+  }
+}
+setInterval(() => { syncCalendarFeed(); }, 6 * 3600e3).unref();
+try { syncCalendarFeed(); } catch {}
+function applyCalendarEvents(events) {
+  tx(() => {
+    db.prepare('DELETE FROM calendar_events').run();
+    const ins = db.prepare('INSERT INTO calendar_events(uid,summary,location,start_ts,end_ts,all_day) VALUES(?,?,?,?,?,?)');
+    const now = localParts().date;
+    for (const e of events) {
+      if (!icsWithinWindow(e.start_ts, now)) continue;
+      ins.run(e.uid, e.summary, e.location, e.start_ts, e.end_ts, e.all_day);
+    }
+  });
+}
+const calendarCount = () => db.prepare('SELECT COUNT(*) c FROM calendar_events').get().c;
 if (process.env.ADMIN_PASSWORD && !getSetting('admin_hash')) {
   setSetting('admin_hash', hashPassword(String(process.env.ADMIN_PASSWORD)));
   console.log('admin password set from ADMIN_PASSWORD env (first run only)');
