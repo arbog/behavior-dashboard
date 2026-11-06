@@ -59,8 +59,8 @@ cost-plus line items, and the launch checklist. Iterate there.
 
 Server-side subtasks it creates (agent-buildable, queue after the consent
 flow review):
-- [ ] `0020` guardian consent flow — email + knowledge-based challenge,
-      recording the consent artifact (the `consents` table exists since `0017`)
+- [x] `0020` guardian consent flow — email + knowledge-based challenge,
+      recording the consent artifact (the `consents` table exists since `0017`) (landed 2026-11-05)
 - [ ] `0021` key re-reveal + rotation — show the board passphrase again from
       the console with a passkey; rotate it (re-encrypt the blob)
 - [ ] `0022` per-board webhook settings (today `BD_WEBHOOK_URL` env-only)

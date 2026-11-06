@@ -136,7 +136,7 @@ Security & data:
 | `GET /api/admin/api-keys` | keys (prefix only) |
 | `DELETE /api/admin/api-keys/:id` | revoke a key |
 | `GET /api/admin/export` | every table as one dated JSON attachment |
-| `GET /api/admin/consent` | the consent artifact(s) — who acknowledged what, when |
+| `GET /api/admin/consent` | the consent artifact(s) — kind (`self_host_ack` / `vpc_kba`), what, who, when, contact |
 | `PUT /api/admin/retention` | `{months}` 0–60 — how many months of raw events (ABC, battery, tools, check-ins) to keep; 0 keeps everything; prunes on save, hourly after |
 | `POST /api/admin/wipe` | `{confirm: "DELETE EVERYTHING"}` — deletes every board data row, reseeds the neutral copy, signs out all other devices; keeps the login and the consent record |
 | `GET /api/admin/requests` | the requests log (last 7 days, up to 200): what the child asked for + a tally |

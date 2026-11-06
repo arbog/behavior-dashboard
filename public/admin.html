@@ -152,6 +152,15 @@ async function showAuth() {
     ? `<h1>Welcome to the board</h1>
        <div class="dim">First run: pick a password for this console, and who the board is for.</div>
        <div class="mt"><small class="dim">Setup token (printed in the server log at first boot, or the <code>SETUP_TOKEN</code> you deployed with)</small><input id="auToken" autocomplete="off" spellcheck="false" placeholder="64 hex characters"></div>
+       ${me.consent_required ? `<div class="mt" style="border:1px solid var(--line);border-radius:10px;padding:10px 12px">
+         <small class="dim" style="white-space:pre-line">${esc(me.consent_notice || '')}</small>
+         <div class="mt"><small class="dim">Parent email (the consent contact on record)</small><input id="auEmail" type="email" autocomplete="email" placeholder="you@example.org"></div>
+         ${(me.consent_questions || []).map((q, i) => `<div class="mt"><small class="dim">${esc(q)}</small><input id="auKba${i}" autocomplete="off"></div>`).join('')}
+         <div class="mt"><small class="dim">The child this board is for is:</small></div>
+         <div class="row mt" style="gap:10px">
+           <label style="display:flex;gap:6px;align-items:center"><input type="radio" name="auAge" value="under13" checked> under 13</label>
+           <label style="display:flex;gap:6px;align-items:center"><input type="radio" name="auAge" value="13plus"> 13 or older</label>
+         </div></div>` : ''}
        <div class="mt"><small class="dim">Child's name (shown on the kiosk, in scripts)</small><input id="auName" maxlength="40" placeholder="e.g. Sam"></div>
        <div class="mt"><small class="dim">Admin password (8+ characters)</small><input id="auPw" type="password" autocomplete="new-password"></div>
        <div class="mt"><button class="b" id="auGo" style="width:100%">Create the console</button></div>
@@ -168,7 +177,16 @@ async function showAuth() {
       // the page never sees the token
       const r = await fetch(me.setup ? '/api/admin/setup' : '/api/admin/login', {
         method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(me.setup ? { password: $('#auPw').value, child_name: $('#auName').value, token: $('#auToken').value } : { password: $('#auPw').value }),
+        body: JSON.stringify(me.setup ? {
+          password: $('#auPw').value, child_name: $('#auName').value, token: $('#auToken').value,
+          ...(me.consent_required ? {
+            consent: {
+              email: $('#auEmail')?.value || '',
+              answers: (me.consent_questions || []).map((q, i) => $('#auKba' + i)?.value || ''),
+              age_band: document.querySelector('input[name="auAge"]:checked')?.value || '',
+            },
+          } : {}),
+        } : { password: $('#auPw').value }),
       });
       if (!r.ok) { const e = await r.json().catch(() => ({})); alert(e.error || 'Error'); return; }
       $('#auth').hidden = true;
