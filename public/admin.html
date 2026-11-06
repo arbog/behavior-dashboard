@@ -160,7 +160,8 @@ async function showAuth() {
        <div class="dim">This console is private. The kiosk code is not the same thing — it lives on the board itself.</div>
        <div class="mt"><input id="auPw" type="password" placeholder="Password" autocomplete="current-password"></div>
        <div class="mt"><button class="b" id="auGo" style="width:100%">Sign in</button></div>
-       ${'window.PublicKeyCredential' in window ? '<button class="b sec" id="auPk" style="width:100%;margin-top:6px">Sign in with a passkey</button><div class="dim mt" id="auPkMsg" style="font-size:13px"></div>' : ''}`;
+       ${'window.PublicKeyCredential' in window ? '<button class="b sec" id="auPk" style="width:100%;margin-top:6px">Sign in with a passkey</button><div class="dim mt" id="auPkMsg" style="font-size:13px"></div>' : ''}
+       <div id="auOauth"></div>`;
   $('#auGo').onclick = async () => {
     try {
       // the session arrives as an HttpOnly Set-Cookie; the browser stores it,
@@ -175,6 +176,26 @@ async function showAuth() {
       show();
     } catch (e) { /* network */ }
   };
+  // OAuth providers (0023): offer the buttons only for configured providers.
+  (async () => {
+    try {
+      const pv = await (await fetch('/api/admin/oauth/providers')).json();
+      const box = $('#auOauth');
+      if (!box || !pv.providers?.length) return;
+      for (const pr of pv.providers) {
+        const b = document.createElement('button');
+        b.className = 'b sec'; b.style.cssText = 'width:100%;margin-top:6px';
+        b.textContent = 'Sign in with ' + (pr === 'apple' ? 'Apple' : 'Google');
+        b.onclick = async () => {
+          const o = await (await fetch('/api/admin/oauth/begin?provider=' + pr)).json();
+          if (o.url) location.href = o.url; else if (box.lastElementChild) box.lastElementChild.textContent = o.error || 'not available';
+        };
+        box.appendChild(b);
+      }
+      const err = new URLSearchParams(location.search).get('oauth');
+      if (err) box.insertAdjacentHTML('beforeend', `<div class="dim mt" style="font-size:13px">${esc(err)}</div>`);
+    } catch {}
+  })();
   $('#auPk')?.addEventListener('click', async () => {
     const msg = $('#auPkMsg');
     try {
@@ -473,7 +494,7 @@ function vWeek() {
 
 // ---------- Settings: identity, security, battery copy, rewards, protocol ----------
 async function vSettings() {
-  const [sec, sess, kdev, pk, pkc] = await Promise.all([api('GET', '/security'), api('GET', '/sessions'), api('GET', '/kiosk-devices'), api('GET', '/webauthn/credentials').catch(() => ({ keys: [] })), api('GET', '/consent')]);
+  const [sec, sess, kdev, pk, pkc, oid, opv] = await Promise.all([api('GET', '/security'), api('GET', '/sessions'), api('GET', '/kiosk-devices'), api('GET', '/webauthn/credentials').catch(() => ({ keys: [] })), api('GET', '/consent'), api('GET', '/oauth/identities').catch(() => ({ identities: [] })), fetch('/api/admin/oauth/providers').then(r => r.json()).catch(() => ({ providers: [] }))]);
   const secRow = e => `<div class="row" style="padding:6px 0;border-bottom:1px solid var(--line);gap:10px">
       <span class="dim" style="width:52px">${esc(String(e.ts).slice(5, 16))}</span>
       <span style="width:140px;font-weight:600;${e.ok ? '' : 'color:var(--bad)'}">${esc(e.kind)}${e.ok ? '' : ' ✗'}</span>
@@ -549,6 +570,15 @@ async function vSettings() {
     </div>
     <div class="mt"><button class="b sec" id="wizBtn">Run the family walkthrough</button></div></div>
 
+  <div class="card"><h2>Linked accounts</h2>
+    <div class="dim">Sign in with Apple or Google — a third way to obtain the same session. The provider sees only that your browser visited; none of your child's data ever leaves the board for it. Link while signed in; a new provider sign-in cannot create an account by itself.</div>
+    ${(oid.identities || []).map(i => `<div class="row" style="padding:6px 0;border-bottom:1px solid var(--line)">
+      <span style="width:110px;font-weight:600">${esc(i.provider === 'apple' ? 'Apple' : 'Google')}</span>
+      <span class="dim grow">${esc(i.email)} · last used ${esc(String(i.last_used_at || '—').slice(5, 16))}</span>
+      ${i.revoked_at ? '<span class="tag">removed</span>' : `<button class="b sec" data-oidrev="${i.id}">Unlink</button>`}</div>`).join('') || '<div class="dim">No linked accounts yet.</div>'}
+    <div class="row mt" id="oidLink"></div>
+  </div>
+
   <div class="card"><h2>Passkeys</h2>
     <div class="dim">Sign in to this console with your face, fingerprint, or device PIN instead of the password. The password still works — keep it written down; it is the recovery path if every device with a passkey is lost. Changing your board's domain signs out all passkeys.</div>
     ${(pk.keys || []).map(k => `<div class="row" style="padding:6px 0;border-bottom:1px solid var(--line)">
@@ -611,6 +641,17 @@ async function vSettings() {
   $('#view').querySelectorAll('[data-revoke]').forEach(b => b.onclick = async () => {
     if (!confirm(`Revoke “${b.dataset.label}”? That kiosk must be given a new code.`)) return;
     await api('DELETE', '/kiosk-devices/' + b.dataset.revoke); toast('Device revoked'); show();
+  });
+  // OAuth link buttons, for the providers this board has configured
+  $('#oidLink').innerHTML = (opv.providers || []).map(pv =>
+    `<button class="b sec" data-oauth="${pv}">Link ${pv === 'apple' ? 'Apple' : 'Google'}</button>`).join('') || '<span class="dim" style="font-size:13px">No OAuth providers are configured on this board (BD_OAUTH_* env).</span>';
+  $('#view').querySelectorAll('[data-oauth]').forEach(b => b.onclick = async () => {
+    const o = await api('GET', `/oauth/begin?provider=${b.dataset.oauth}`);
+    location.href = o.url;
+  });
+  $('#view').querySelectorAll('[data-oidrev]').forEach(b => b.onclick = async () => {
+    if (!confirm('Unlink this account? It can no longer sign in.')) return;
+    await api('DELETE', '/oauth/identities/' + b.dataset.oidrev); toast('Unlinked'); show();
   });
   $('#pkAdd').onclick = async () => {
     try {

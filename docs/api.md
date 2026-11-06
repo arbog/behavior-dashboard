@@ -95,6 +95,17 @@ Identity & copy (what the family words):
 | `PUT /api/admin/protocol` | `{proactive[], behavior[], hold, script_rule, script, checkin_minutes}` |
 | `PUT /api/admin/profile` | `{id}` switches the capability preset (resets the flags); `{capabilities}` refines them (`{rules:false, …}`) — flags live on every config + kiosk payload as `profile` / `caps` |
 
+Linked accounts (OAuth — a third way to obtain the same admin session; see `docs/integrations.md` for the trust rules — linking is parent-only, sign-in requires an already-linked identity):
+
+| Method & path | Auth | Purpose |
+|---|---|---|
+| `GET /api/admin/oauth/providers` | open | which providers are configured (`{providers: ['google', …]}`) |
+| `GET /api/admin/oauth/begin?provider=…` | open | `{url, state}` — the provider's authorize URL with a single-use state |
+| `GET /api/admin/oauth/google/callback` | open | the code exchange → 302 back to `/admin` (`?oauth=linked` / `?oauth=…reason`); a sign-in sets the session cookie |
+| `POST /api/admin/oauth/apple/callback` | open | Apple's `form_post` dialect (`id_token` + `state` in the form body) — same outcomes |
+| `GET /api/admin/oauth/identities` | session | linked identities (provider, email, last used) |
+| `DELETE /api/admin/oauth/identities/:id` | session | unlink — the provider can no longer sign in |
+
 Passkeys (WebAuthn — a second way to mint the same admin session; the password stays as recovery):
 
 | Method & path | Auth | Purpose |
