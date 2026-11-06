@@ -181,6 +181,10 @@ addColumn('days', "plan_kind TEXT DEFAULT ''");
 // Self-report (research P3): the child's own 1–5 worry scale, tapped on the
 // kiosk. Kept beside the parent-logged levels, attributed by='kiosk'.
 addColumn('check_ins', 'self_report INTEGER');
+// Consent artifacts gain their type and the consent contact (0020): the
+// self-host acknowledgment vs the managed tier's COPPA VPC record.
+addColumn('consents', 'kind TEXT DEFAULT \'self_host_ack\'');
+addColumn('consents', 'contact TEXT DEFAULT \'\'');
 addColumn('sessions', "last_seen TEXT DEFAULT ''");
 
 // ---------- defaults (neutral starting points; all editable in /admin) ----------
@@ -1005,13 +1009,35 @@ async function admin(req, res, url, body, user) {
   let m;
 
   // ---------- auth / setup ----------
+  // ---- guardian consent (0020): the managed tier's COPPA VPC step. The
+  // platform provisions the board with hashed knowledge-based questions
+  // (BD_CONSENT_KBA: [{q, h}]); the parent completes the notice + email +
+  // answers + age-band assertion at setup. The email themselves is sent by
+  // the platform — the board verifies the challenge and records the
+  // artifact. Self-host boards without BD_REQUIRE_CONSENT keep the simple
+  // 0017 acknowledgment. Research: docs/research/laws.md §312.5(b)(viii).
+  const consentRequired = () => process.env.BD_REQUIRE_CONSENT === '1';
+  const consentQuestions = () => {
+    try {
+      const qs = JSON.parse(process.env.BD_CONSENT_KBA || '[]');
+      if (Array.isArray(qs) && qs.length && qs.every(q => q.q && /^[0-9a-f]{64}$/.test(q.h || ''))) return qs;
+    } catch {}
+    return null;
+  };
+  const normAnswer = a => String(a || '').normalize('NFKC').trim().toLowerCase().replace(/\s+/g, ' ');
   if (M === 'GET' && p === '/api/admin/me') {
     if (adminAuthed(req)) return json(res, 200, { user: 'admin', setup: false, child_name: childName() });
     const configured = !!getSetting('admin_hash');
+    // 0020: the managed tier's consent step, surfaced for the setup screen —
+    // the question texts are public (they are on the setup form anyway).
+    const vpc = !configured && consentRequired();
     return json(res, configured ? 401 : 200, {
       setup: !configured,
       // Presence only — the value never leaves the server log / operator env.
       setup_token: !configured && !!getSetting('setup_token_hash'),
+      consent_required: vpc,
+      consent_questions: vpc ? (consentQuestions() || []).map(q => q.q) : [],
+      consent_notice: vpc ? (process.env.BD_CONSENT_NOTICE || 'This board stores your child\'s behavioral data — schedule, marks, events, notes — on the host\'s machine. You can export everything or delete it at any time. Nothing is shared with anyone.') : null,
     });
   }
   if (M === 'POST' && p === '/api/admin/login') {
@@ -1034,6 +1060,8 @@ async function admin(req, res, url, body, user) {
     logEvent('login_fail', ip, 'wrong password');
     return json(res, 401, { error: 'wrong password' });
   }
+  // ---- guardian consent (0020): helpers live at the top of admin() so the
+  // /me probe and setup both see them. See the block before /setup.
   if (M === 'POST' && p === '/api/admin/setup') {
     if (getSetting('admin_hash')) return json(res, 409, { error: 'already configured' });
     if (!rateLimit('setup:' + ip, 10, 60000)) return json(res, 429, { error: 'too many attempts' });
@@ -1049,13 +1077,36 @@ async function admin(req, res, url, body, user) {
     }
     const pw = String(body.password || '');
     if (weakPassword(pw)) return json(res, 400, { error: 'password is too common or too short — use 8+ characters that are not a dictionary word' });
+    // The VPC step (0020) when this board is managed:
+    let consentKind = 'self_host_ack', consentContact = '', consentWhat =
+      'I run this board for my family on my own machine. I choose to store my child\'s behavioral data here. I can export it or delete everything at any time.';
+    if (consentRequired()) {
+      const qs = consentQuestions();
+      if (!qs) return json(res, 500, { error: 'this board requires guardian consent but its challenge is misconfigured — contact your host' });
+      const c = body.consent || {};
+      const email = clampStr(String(c.email || '').trim(), 200);
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return json(res, 403, { error: 'a parent email address is required for consent' });
+      const band = c.age_band;
+      if (band !== 'under13' && band !== '13plus') return json(res, 403, { error: 'assert the child\'s age band (under13 or 13plus)' });
+      const answers = Array.isArray(c.answers) ? c.answers : [];
+      if (answers.length !== qs.length) return json(res, 403, { error: 'every knowledge-based question must be answered' });
+      for (let i = 0; i < qs.length; i++) {
+        const got = crypto.createHash('sha256').update(normAnswer(answers[i])).digest();
+        const want = Buffer.from(qs[i].h, 'hex');
+        if (got.length !== want.length || !crypto.timingSafeEqual(got, want)) {
+          logEvent('setup_fail', ip, `kba question ${i} wrong`, false);
+          return json(res, 403, { error: `an answer did not match: ${qs[i].q}` });
+        }
+      }
+      consentKind = 'vpc_kba';
+      consentContact = email;
+      consentWhat = `Verifiable parental consent per 16 CFR 312.5(b)(viii): notice given; consent contact ${email}; knowledge-based challenge passed (${qs.length} questions); the operator asserted the child is ${band === 'under13' ? 'under 13' : '13 or older'}.`;
+    }
     setSetting('admin_hash', hashPassword(pw));
     setSetting('setup_token_hash', null);   // single use
     if (body.child_name != null) setSetting('child_name', clampStr(body.child_name, 40));
-    // Consent artifact (0017): the operator's own acknowledgment, recorded —
-    // self-hosted, the family IS the operator; this is the record they kept.
-    db.prepare('INSERT INTO consents(who,what,ip,ts) VALUES(?,?,?,?)').run(
-      'guardian', 'I run this board for my family on my own machine. I choose to store my child\'s behavioral data here. I can export it or delete everything at any time.', ip, tsNow());
+    // The consent artifact — the one record a deletion request must leave behind.
+    db.prepare('INSERT INTO consents(who,what,ip,ts,kind,contact) VALUES(?,?,?,?,?,?)').run('guardian', consentWhat, ip, tsNow(), consentKind, consentContact);
     logEvent('setup', ip);
     return json(res, 200, { ok: true }, { 'set-cookie': newSession() });
   }
@@ -1335,7 +1386,7 @@ async function admin(req, res, url, body, user) {
     return json(res, 200, { configured: !!url, url_prefix: url ? url.slice(0, 28) + '…' : '', fetched_at: st.fetched_at || null, count: calendarCount(), error: st.error || '' });
   }
   if (M === 'GET' && p === '/api/admin/consent') {
-    return json(res, 200, { consents: db.prepare('SELECT who,what,ip,ts FROM consents ORDER BY id').all() });
+    return json(res, 200, { consents: db.prepare('SELECT who,what,ip,ts,kind,contact FROM consents ORDER BY id').all() });
   }
   // Retention: how many months of raw events the board keeps. 0 = keep
   // everything (the family's own machine, their own call). Changing it prunes
