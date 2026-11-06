@@ -50,11 +50,32 @@ code task runs. Dependent tasks carry a Stop-and-ask for the missing doc.
 - [x] `0018` encryption at rest (whole-DB blob; the blob is the backup) (landed 2026-11-05)
 
 ## M — Managed tier & deploy (ATTENDED ONLY — secrets/infra, never queued)
+
+The plan for all of it is public: **`docs/managed.md`** — the architecture
+(one family, one container; per-tenant subdomains so passkeys bind to the
+family's own origin), the trust model (what we can see, and the three ways a
+family takes that trust back), the privacy-law layer, the breach runbook, the
+cost-plus line items, and the launch checklist. Iterate there.
+
+Server-side subtasks it creates (agent-buildable, queue after the consent
+flow review):
+- [ ] `0020` guardian consent flow — email + knowledge-based challenge,
+      recording the consent artifact (the `consents` table exists since `0017`)
+- [ ] `0021` key re-reveal + rotation — show the board passphrase again from
+      the console with a passkey; rotate it (re-encrypt the blob)
+- [ ] `0022` per-board webhook settings (today `BD_WEBHOOK_URL` env-only)
+
+Attended items below stay attended:
 - [ ] PaaS one-click deploy satisfying the `docs/self-service.md` contract
       (SECURE_COOKIES=1, setup-token flow, persistent volume)
-- [ ] per-tenant instances on the homelab cluster; encrypted volumes
-- [ ] encrypted backups + documented family deletion procedure
+- [ ] per-tenant provisioning automation on the homelab cluster — namespace,
+      PVC, `board.enc` blob, subdomain + TLS, OpenBao secrets (until built,
+      boards are provisioned by hand and `docs/managed.md` says so)
+- [ ] encrypted backups (blob copy off-cluster, 30-day purge) + documented
+      family deletion procedure
+- [ ] the two notices + published retention policy (`docs/managed.md` §law)
 - [ ] contract-tier pricing page (line items, per VALUES.md)
+- [ ] backup-restore drill before the first family
 
 ## O — Sign-off (ATTENDED ONLY)
 - [ ] independent cybersecurity review + public sign-off statement
