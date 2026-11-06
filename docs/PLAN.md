@@ -70,8 +70,8 @@ flow review):
       (JWRS JWKS, issuer/audience/expiry), link-from-console + sign-in for
       already-linked identities, no account creation via OAuth (landed
       2026-11-05, tested against a stub identity provider)
-- [ ] `0024` calendar v1 — private iCal feeds (Apple AND Google calendars,
-      read-only, zero-dep ICS parser), shown on the kiosk calendar band
+- [x] `0024` calendar v1 — private iCal feeds (Apple AND Google calendars,
+      read-only, zero-dep ICS parser), shown on the kiosk calendar band (landed 2026-11-05)
 - [ ] `0025` calendar v2 — native Google Calendar with OAuth scope (write
       day plans back to the family's real calendar; explicit per-family
       consent screen, revocable)

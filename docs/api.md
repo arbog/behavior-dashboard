@@ -72,6 +72,8 @@ Kiosk & board data:
 | `PUT /api/admin/abc-options` | `{A:[], B:[], C:[]}` |
 | `GET /api/admin/calendar?days=N` , `PUT /api/admin/plans/:date`, `DELETE /api/admin/plans/:date` | day plans (plan/trip/free/special + label) |
 | `POST /api/admin/free-weekday` | `{dow, mode}` — map a weekday to the free-form template |
+| `PUT /api/admin/calendar-feed` | subscribe the family's private iCal feed (Apple or Google): `{url}` — fetched, parsed, events shown on the kiosk; `{url: ''}` clears it. Read-only pull, no tokens |
+| `GET /api/admin/calendar-feed` | feed status: `{configured, url_prefix, fetched_at, count, error}` — the full URL never comes back |
 
 Regulation & protocol:
 
