@@ -22,6 +22,7 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const { b64u, b64uToBuf, sha256: wSha256, cborDecode, coseKey, parseAuthData, newChallenge, takeChallenge, checkClientData } = require('./webauthn.js');
+const { PROVIDERS: OAUTH_PROVIDERS, cfgFor: oauthCfgFor } = require('./oauth.js');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
@@ -141,6 +142,13 @@ CREATE TABLE IF NOT EXISTS consents (
 -- "Sam said BREAK at 14:02", never an entry in the ABC form.
 CREATE TABLE IF NOT EXISTS requests (
   id INTEGER PRIMARY KEY, ts TEXT NOT NULL, label TEXT NOT NULL, by TEXT DEFAULT 'kiosk');
+-- OAuth identities (0023): a third way to obtain the same admin session —
+-- the provider (Apple/Google) vouches for the PARENT's identity; no child
+-- data ever leaves the board for it. Linked only by a signed-in parent;
+-- sign-in works only for an already-linked identity.
+CREATE TABLE IF NOT EXISTS oauth_identities (
+  id INTEGER PRIMARY KEY, provider TEXT NOT NULL, sub TEXT NOT NULL, email TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL, last_used_at TEXT DEFAULT '', revoked_at TEXT, UNIQUE(provider, sub));
 `);
 
 // Bounded audit trail: what happened to the board's keys and who touched it.
@@ -971,7 +979,7 @@ function abcSummary(rows) {
 const clampStr = (s, n = 200) => String(s ?? '').slice(0, n);
 const toInt = v => (v === '' || v == null || Number.isNaN(Number(v)) ? null : Math.round(Number(v)));
 
-function admin(req, res, url, body, user) {
+async function admin(req, res, url, body, user) {
   const p = url.pathname, M = req.method;
   const ip = clientIp(req);
   let m;
@@ -1085,6 +1093,51 @@ function admin(req, res, url, body, user) {
     logEvent('webauthn_signin', ip, row.name);
     return json(res, 200, { ok: true }, { 'set-cookie': newSession() });
   }
+  // ---- OAuth sign-in (0023): Apple/Google as a third credential for the
+  // same admin session. Trust rules: linking happens only from a signed-in
+  // console; an unlinked identity can never sign in; no child data leaves
+  // the board for the provider (the only thing they ever see is the
+  // parent's browser visiting them). See docs/integrations.md.
+  const oauthConfigured = p2 => { try { oauthCfgFor(p2, 'http://x'); return true; } catch { return false; } };
+  if (M === 'GET' && p === '/api/admin/oauth/providers') {
+    return json(res, 200, { providers: ['google', 'apple'].filter(p2 => oauthConfigured(p2)) });
+  }
+  const oauthRedirect = (res, hash) => { res.writeHead(302, { location: '/admin' + hash, 'cache-control': 'no-store', ...SEC_HEADERS }); return res.end(); };
+  if (M === 'GET' && p === '/api/admin/oauth/begin') {
+    const provider = url.searchParams.get('provider');
+    if (!OAUTH_PROVIDERS[provider]) return json(res, 404, { error: 'unknown provider' });
+    if (!oauthConfigured(provider)) return json(res, 404, { error: `${provider} sign-in is not configured on this board` });
+    if (!rateLimit('oauth:' + ip, Number(process.env.OAUTH_RATE_LIMIT) || 20, 60000)) return json(res, 429, { error: 'too many requests' });
+    const cfg = oauthCfgFor(provider, requestOrigin());
+    const state = newChallenge('oauth-' + provider);
+    return json(res, 200, { url: OAUTH_PROVIDERS[provider].authorizeUrl(cfg, state), state });
+  }
+  // The callback accepts the finished identity in two dialects: Google's code
+  // exchange (GET, querystring) and Apple's form_post (POST, body).
+  if ((M === 'GET' && (m = p.match(/^\/api\/admin\/oauth\/(google)\/callback$/))) ||
+      (M === 'POST' && (m = p.match(/^\/api\/admin\/oauth\/(apple)\/callback$/)))) {
+    const provider = m[1];
+    if (!rateLimit('oauth:' + ip, Number(process.env.OAUTH_RATE_LIMIT) || 20, 60000)) return json(res, 429, { error: 'too many requests' });
+    const params = provider === 'apple' ? body : Object.fromEntries(url.searchParams);
+    const cfg = oauthCfgFor(provider, requestOrigin());
+    const st = takeChallenge(String(params.state || ''), 'oauth-' + provider);
+    if (!st) return oauthRedirect(res, '?oauth=' + encodeURIComponent('that sign-in attempt has expired — try again'));
+    let claims;
+    try { claims = await OAUTH_PROVIDERS[provider].verify(params, cfg); }
+    catch (e) { logEvent('oauth_fail', ip, provider + ': ' + e.message, false); return oauthRedirect(res, '?oauth=' + encodeURIComponent(e.message)); }
+    const sub = `${provider}:${String(claims.sub)}`;
+    const existing = db.prepare('SELECT id FROM oauth_identities WHERE provider=? AND sub=? AND revoked_at IS NULL').get(provider, String(claims.sub));
+    if (adminAuthed(req)) {
+      if (existing) return oauthRedirect(res, '?oauth=already+linked');
+      db.prepare('INSERT INTO oauth_identities(provider,sub,email,created_at,last_used_at) VALUES(?,?,?,?,?)').run(provider, String(claims.sub), clampStr(claims.email, 200), tsNow(), '');
+      logEvent('oauth_link', ip, provider);
+      return oauthRedirect(res, '?oauth=linked');
+    }
+    if (!existing) { logEvent('oauth_fail', ip, provider + ': not linked', false); return oauthRedirect(res, '?oauth=' + encodeURIComponent('this identity is not linked to a board — sign in with your passkey and link it from Settings')); }
+    db.prepare('UPDATE oauth_identities SET last_used_at=? WHERE id=?').run(tsNow(), existing.id);
+    logEvent('oauth_signin', ip, provider);
+    return json(res, 200, { ok: true }, { 'set-cookie': newSession() });
+  }
   // Everything below requires an admin session — including the password
   // endpoints: changing the password, reading or rotating the kiosk token, and
   // every board-copy editor is session-gated on purpose.
@@ -1167,6 +1220,16 @@ function admin(req, res, url, body, user) {
       .run(cid, name, JSON.stringify(parsed.jwk), cred.signCount, cred.credential.aaguid.toString('hex'), tsNow(), '');
     logEvent('webauthn_register', ip, name);
     return json(res, 200, { ok: true, id: Number(info.lastInsertRowid), name });
+  }
+  if (M === 'GET' && p === '/api/admin/oauth/identities') {
+    return json(res, 200, { identities: db.prepare('SELECT id,provider,email,created_at,last_used_at,revoked_at FROM oauth_identities ORDER BY id').all() });
+  }
+  if (M === 'DELETE' && (m = p.match(/^\/api\/admin\/oauth\/identities\/(\d+)$/))) {
+    const row = db.prepare('SELECT id,provider FROM oauth_identities WHERE id=? AND revoked_at IS NULL').get(Number(m[1]));
+    if (!row) return json(res, 404, { error: 'no such linked identity' });
+    db.prepare('UPDATE oauth_identities SET revoked_at=? WHERE id=?').run(tsNow(), row.id);
+    logEvent('oauth_unlink', ip, row.provider);
+    return json(res, 200, { ok: true });
   }
   if (M === 'GET' && p === '/api/admin/webauthn/credentials') {
     const keys = db.prepare('SELECT id,name,aaid,created_at,last_used_at,revoked_at FROM passkeys ORDER BY id').all();
@@ -1579,7 +1642,16 @@ const SEC_HEADERS = {
 const json = (res, code, body, extra = {}) => { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store', ...SEC_HEADERS, ...extra }); res.end(JSON.stringify(body)); };
 const readBody = req => new Promise((ok, bad) => {
   let s = ''; req.on('data', c => { s += c; if (s.length > 1e6) { bad(new Error('too large')); req.destroy(); } });
-  req.on('end', () => { try { ok(s ? JSON.parse(s) : {}); } catch (e) { bad(e); } });
+  req.on('end', () => {
+    try {
+      if (/x-www-form-urlencoded/i.test(String(req.headers['content-type']))) {
+        const out = {};   // Apple's form_post callback speaks this dialect
+        for (const [k, v] of new URLSearchParams(s)) out[k] = v;
+        return ok(out);
+      }
+      ok(s ? JSON.parse(s) : {});
+    } catch (e) { bad(e); }
+  });
 });
 function serveStatic(res, file) {
   const p = path.join(PUBLIC_DIR, file);

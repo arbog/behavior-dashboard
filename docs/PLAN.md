@@ -65,6 +65,17 @@ flow review):
       the console with a passkey; rotate it (re-encrypt the blob)
 - [ ] `0022` per-board webhook settings (today `BD_WEBHOOK_URL` env-only)
 
+## I — Integrations (see `docs/integrations.md`)
+- [x] `0023` OAuth sign-in (Apple/Google) — zero-dep ID-token verification
+      (JWRS JWKS, issuer/audience/expiry), link-from-console + sign-in for
+      already-linked identities, no account creation via OAuth (landed
+      2026-11-05, tested against a stub identity provider)
+- [ ] `0024` calendar v1 — private iCal feeds (Apple AND Google calendars,
+      read-only, zero-dep ICS parser), shown on the kiosk calendar band
+- [ ] `0025` calendar v2 — native Google Calendar with OAuth scope (write
+      day plans back to the family's real calendar; explicit per-family
+      consent screen, revocable)
+
 Attended items below stay attended:
 - [ ] PaaS one-click deploy satisfying the `docs/self-service.md` contract
       (SECURE_COOKIES=1, setup-token flow, persistent volume)
