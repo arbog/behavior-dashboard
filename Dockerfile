@@ -8,7 +8,12 @@ RUN mkdir -p /data && chown -R node:node /data
 USER node
 WORKDIR /app
 
-COPY server.js webauthn.js store.js oauth.js ./
+# Every shipped module, by pattern rather than by name: this line used to list
+# server.js/webauthn.js/store.js/oauth.js explicitly, and when `ics.js` was added
+# the list was not — so :latest reached ghcr as an image that crashed on boot
+# with "Cannot find module './ics.js'" (found 2026-11-05 deploying the dev board).
+# Tests stay out via .dockerignore; dockerfile.test.js holds the line from here.
+COPY *.js ./
 COPY package.json ./
 COPY public ./public
 
