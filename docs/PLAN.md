@@ -93,8 +93,11 @@ Attended items below stay attended:
 - [ ] BCBA / clinical review of the protocol features + sign-off statement
 
 ## N — Identity (ATTENDED ONLY)
-- [ ] name + domain. **Blocks PaaS launch and passkey RP-ID finalization —
-      decide before 0015/0016 ship to production users.**
+- [x] name + domain — **decided 2026-11-05: KindBoard, kindboard.app**;
+      managed boards live at `<name>.board.kindboard.app` with RP-ID
+      `board.kindboard.app` (research: docs/research/naming.md). Unblocks
+      passkey RP-ID finalization for the managed tier. Operator action
+      remaining: register the domain.
 
 ## Handoffs (operator actions)
 

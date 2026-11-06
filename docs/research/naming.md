@@ -2,7 +2,17 @@
 
 Research task for `PLAN` workstream N (name + domain — ATTENDED, but this
 doc does the homework). Executed in-session 2026-11-05 via web search
-(sources cited). The decision is not made here; this is the map.
+(sources cited).
+
+**DECIDED 2026-11-05: the product is KindBoard; the managed domain is
+kindboard.app.** KindBoard won on the same test the shortlist was built
+around — it is the VALUES.md thesis in one word, it is warm without being
+cute, and kindboard.app was unregistered. The per-family managed origin is
+`<name>.board.kindboard.app`, and the passkey RP-ID is `board.kindboard.app`
+(the shared suffix: every family board's WebAuthn credentials bind to it,
+and credential lookup is per board, so families stay isolated). The
+`kindboard.app` domain itself is registered by the operator — an operator
+action, not a code one. See docs/managed.md §domain.
 
 ## What the community says, in one page
 
