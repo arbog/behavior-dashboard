@@ -302,13 +302,20 @@ test('risk patterns aggregate check-ins and behaviors', async () => {
 test('day plans carry their name to the kiosk without clobbering marks', async () => {
   const cfg = (await call('GET', '/api/admin/config')).body;
   const trip = cfg.modes.find(m => m.name === 'Trip Day');
-  const sat = (() => { const d = new Date(); d.setDate(d.getDate() + ((6 - d.getDay() + 7) % 7)); return d.toISOString().slice(0, 10); })();
+  // next Saturday in the SERVER's local time — toISOString is UTC and drifts a day ahead every afternoon
+  const sat = await call('GET', '/api/today').then(x => {
+    const d = new Date(x.body.date + 'T12:00:00');
+    d.setDate(d.getDate() + ((6 - d.getDay() + 7) % 7));
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  });
   await call('PUT', `/api/admin/plans/${sat}`, { mode_id: trip.id, kind: 'trip', label: 'Beach Day', note: 'leave after breakfast' });
   const cal = (await call('GET', '/api/admin/calendar?days=14')).body.calendar;
   const d1 = cal.find(c => c.date === sat);
   assert.deepEqual([d1.label, d1.kind, d1.mode_name, d1.source], ['Beach Day', 'trip', 'Trip Day', 'plan']);
-  // a plan for today that lands after marks must not rebuild the day
-  const today = new Date().toISOString().slice(0, 10);
+  // a plan for today that lands after marks must not rebuild the day.
+  // The date must be the SERVER's local day — the kiosk's payload carries it —
+  // not the UTC date, which runs a day ahead of local time every afternoon.
+  const today = (await call('GET', '/api/today')).body.date;
   await call('PATCH', `/api/admin/day-items/${(await call('GET', '/api/today')).body.items[0].id}`, { rules: 'x' });
   await call('PUT', `/api/admin/plans/${today}`, { mode_id: trip.id, kind: 'trip', label: 'Beach Day', note: 'tide pools at 11' });
   const t = (await call('GET', '/api/today')).body;
@@ -454,7 +461,7 @@ test('docs/api.md documents every route the server handles', () => {
 
 // ---- 0013: board-capability model + profile presets ----
 test('the preset table is the research, in flags', () => {
-  const PROFILE_FLAGS = id => { const { choices, ...rest } = require('./server.js').profileFlags(id); return rest; };
+  const PROFILE_FLAGS = id => { const { choices, requests, ...rest } = require('./server.js').profileFlags(id); return rest; };
   // standard keeps everything; every other profile drops the scoring machinery
   assert.deepEqual(PROFILE_FLAGS('standard'), { tools: true, rewards: true, battery: true, rules: true, abc: true, checkins: true, pause: true });
   assert.deepEqual(PROFILE_FLAGS('gentle'), { tools: false, rewards: true, battery: false, rules: false, abc: false, checkins: false, pause: false }, 'gentle: the day, not the mistakes');
@@ -574,6 +581,74 @@ test('delete-everything: typed confirmation, real deletion, fresh board', async 
   const sec = await call('GET', '/api/admin/security');
   assert.ok(sec.body.events.some(e => e.kind === 'wipe'), 'the wipe itself is on the record');
   assert.equal(sec.status, 200, 'this session still works');
+  kiosk = (await call('POST', '/api/admin/kiosk-devices', { label: 'Reborn kiosk' })).body.token;   // the wipe took the old device
   const other = await fetch(base + '/api/admin/config', { headers: { cookie: 'bd_session=deadbeefdeadbeef' } });
   assert.equal(other.status, 401, 'every other session is signed out');
+});
+
+// ---- wave 6: requests (P2) + child self-report (P3) ----
+test('the requests flag belongs to the communication board alone', () => {
+  const F = require('./server.js').profileFlags;
+  assert.equal(F('communication').requests, true, 'communication: taps are requests');
+  assert.equal(F('standard').requests, false);
+  assert.equal(F('gentle').requests, false);
+  assert.equal(F('no-such-profile').requests, false, 'fallback standard is not the voice board');
+});
+test('requests: the voice board logs what the child says, nothing else', async () => {
+  // under standard, the endpoint is closed — it is the communication surface
+  assert.equal((await kioskRaw('POST', '/api/today/request', { label: 'Break' }, kiosk)).status, 404);
+  await call('PUT', '/api/admin/profile', { id: 'communication' });
+  const cfg = await call('GET', '/api/admin/config');
+  assert.equal(cfg.body.profile.requests, true);
+  const choices = cfg.body.choices.map(c => c.label);
+  const say = choices[0];
+  // a label that is not a button is refused — the kiosk never writes arbitrary words
+  assert.equal((await kioskRaw('POST', '/api/today/request', { label: 'buy me a pony' }, kiosk)).status, 400);
+  const ok = await kioskRaw('POST', '/api/today/request', { label: say }, kiosk);
+  assert.equal(ok.status, 200);
+  const log = await call('GET', '/api/admin/requests?days=1');
+  assert.equal(log.status, 200);
+  assert.ok(log.body.requests.some(r => r.label === say && r.by === 'kiosk'), 'the request is on the log, attributed to the kiosk');
+  assert.ok(log.body.tally.some(([l]) => l === say), 'the tally counts it');
+  // the kiosk's other surfaces are untouched by request mode
+  const t = await kioskRaw('GET', '/api/today', undefined, kiosk);
+  assert.equal(t.body.caps.requests, true);
+  await call('PUT', '/api/admin/profile', { id: 'standard' });
+});
+test('self-report: the child can tap their own worry scale from the kiosk', async () => {
+  const before = (await call('GET', '/api/admin/regulation')).body.check_in;
+  assert.equal((await kioskRaw('POST', '/api/today/checkin', { level: 6 }, kiosk)).status, 400, 'above the scale refused');
+  assert.equal((await kioskRaw('POST', '/api/today/checkin', { level: 0 }, kiosk)).status, 400);
+  const r = await kioskRaw('POST', '/api/today/checkin', { level: 3 }, kiosk);
+  assert.equal(r.status, 200);
+  const row = db.prepare("SELECT self_report, by FROM check_ins WHERE by='kiosk' ORDER BY id DESC LIMIT 1").get();
+  assert.equal(row.self_report, 3, 'the level is stored, not the parent scales');
+  assert.equal(row.by, 'kiosk');
+  // with check-ins off, the child's scale is gone too
+  await call('PUT', '/api/admin/profile', { id: 'gentle' });
+  assert.equal((await kioskRaw('POST', '/api/today/checkin', { level: 3 }, kiosk)).status, 404);
+  await call('PUT', '/api/admin/profile', { id: 'standard' });
+});
+test('requests webhook: BD_WEBHOOK_URL hears every tap', async () => {
+  // a tiny receiver on an ephemeral port — the parent's phone stand-in
+  const hits = [];
+  const http = require('node:http');
+  const rx = http.createServer((rq, rs) => {
+    let b = '';
+    rq.on('data', c => b += c);
+    rq.on('end', () => { hits.push(JSON.parse(b || '{}')); rs.end(); });
+  });
+  await new Promise(r => rx.listen(0, '127.0.0.1', r));
+  process.env.BD_WEBHOOK_URL = `http://127.0.0.1:${rx.address().port}/hook`;
+  await call('PUT', '/api/admin/profile', { id: 'communication' });
+  const choices = (await call('GET', '/api/admin/config')).body.choices.map(c => c.label);
+  kioskRaw('POST', '/api/today/request', { label: choices[0] }, kiosk);
+  await new Promise(r => setTimeout(r, 400));
+  assert.ok(hits.length >= 1, 'the webhook was called');
+  assert.equal(hits[hits.length - 1].kind, 'request');
+  assert.equal(hits[hits.length - 1].label, choices[0]);
+  assert.ok('child' in hits[hits.length - 1], 'the notification names the child');
+  delete process.env.BD_WEBHOOK_URL;
+  await new Promise(r => { rx.close(r); });   // release the port before the suite ends
+  await call('PUT', '/api/admin/profile', { id: 'standard' });
 });
