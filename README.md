@@ -104,7 +104,10 @@ is in [docs/security-model.md](docs/security-model.md).
 
 [docs/roadmap.md](docs/roadmap.md) — name and domain are still open, the
 "click a button and it's deployed" story (PaaS templates, managed hosting)
-is next, and so are multi-child boards, SSO, and i18n.
+is next, and so are multi-child boards, SSO, and i18n. The managed-hosting
+plan — how we would run boards for families, the isolation story, the trust
+model, and the privacy-law layer — is public in
+[docs/managed.md](docs/managed.md).
 
 ## Contributing
 
