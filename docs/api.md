@@ -41,6 +41,8 @@ whole flag set as `caps`; the console config carries `profile`).
 |---|---|
 | `GET /api/today` | today's board for the kiosk (`?token=` is accepted only on this initial load) |
 | `POST /api/today/choice` | the child's tap: `{label}` — records the reward choice |
+| `POST /api/today/request` | the child's tap **as a request** (communication profile only, else 404): `{label}` must be a button on the board → logged for the parents, optionally pushed to `BD_WEBHOOK_URL` |
+| `POST /api/today/checkin` | the child's own worry scale (when check-ins are on): `{level: 1–5}`, stored `by='kiosk'` |
 
 ## Setup & session (before there is a session)
 
@@ -124,6 +126,7 @@ Security & data:
 | `GET /api/admin/consent` | the consent artifact(s) — who acknowledged what, when |
 | `PUT /api/admin/retention` | `{months}` 0–60 — how many months of raw events (ABC, battery, tools, check-ins) to keep; 0 keeps everything; prunes on save, hourly after |
 | `POST /api/admin/wipe` | `{confirm: "DELETE EVERYTHING"}` — deletes every board data row, reseeds the neutral copy, signs out all other devices; keeps the login and the consent record |
+| `GET /api/admin/requests` | the requests log (last 7 days, up to 200): what the child asked for + a tally |
 | `GET /api/admin/security` | audit trail (last 50) + live kiosk devices + api keys + the retention setting |
 
 Errors: `400` bad input, `401` no/wrong credential, `403` wrong token/password,

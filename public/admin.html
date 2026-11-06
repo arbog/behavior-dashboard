@@ -794,13 +794,17 @@ async function vRisk() {
 
 // ---------- History ----------
 async function vHistory() {
-  const [h, abc] = await Promise.all([api('GET', '/history'), api('GET', '/abc?days=30')]);
+  const [h, abc, reqs] = await Promise.all([api('GET', '/history'), api('GET', '/abc?days=30'), api('GET', '/requests').catch(() => ({ requests: [], tally: [] }))]);
   const s = abc.summary, bar = (arr, tot) => arr.map(([k, n]) => `<div class="mt"><div class="row"><span class="grow">${esc(k)}</span><b>${n}</b></div><div class="bar" style="width:${Math.max(4, n / tot * 100)}%"></div></div>`).join('') || '<div class="dim">No data.</div>';
   const max = Math.max(1, ...s.byHour);
   $('#view').innerHTML = `<div class="card"><h2>Behavior — last 30 days (${s.total} entries)</h2>
     <b>Antecedents</b>${bar(s.antecedents, s.total || 1)}<div class="mt"><b>Behaviors</b></div>${bar(s.behaviors, s.total || 1)}<div class="mt"><b>Consequences</b></div>${bar(s.consequences, s.total || 1)}
     <div class="mt"><b>By hour of day</b></div><div class="row" style="align-items:flex-end;gap:2px;height:70px">${s.byHour.map((n, i) => `<div title="${i}:00 — ${n}" style="flex:1;background:var(--accent);height:${n / max * 100}%;min-height:${n ? 3 : 1}px;opacity:${n ? .25 : .25}"></div>`).join('')}</div>
     <div class="row dim" style="justify-content:space-between;font-size:11px"><span>12a</span><span>6a</span><span>12p</span><span>6p</span><span>11p</span></div></div>
+    ${(reqs.requests || []).length ? `<div class="card"><h2>Requests — what they asked for</h2>
+    <div class="dim">On the communication profile, the kiosk's buttons are a voice: this is what was said, not a behavior record. ( BD_WEBHOOK_URL pushes each one to your phone.)</div>
+    <div class="row mt" style="flex-wrap:wrap;gap:6px">${(reqs.tally || []).slice(0, 8).map(([l, n]) => `<span class="tag">${esc(l)} × ${n}</span>`).join('')}</div>
+    <div class="mt">${reqs.requests.slice(0, 10).map(r => `<div class="row" style="padding:4px 0;border-bottom:1px solid var(--line)"><span class="dim" style="width:90px">${esc(String(r.ts).slice(5, 16))}</span><span class="grow" style="font-weight:600">“${esc(r.label)}”</span><span class="dim">${esc(r.by || 'kiosk')}</span></div>`).join('')}</div></div>` : ''}
     ${abcList(abc.events, 'All entries')}
     <div class="card"><h2>Daily scores</h2><table><tr><th>Date</th><th>Mode</th><th>✓</th><th>X</th><th>Min</th><th>For</th></tr>
     ${h.map(d => `<tr><td>${d.date.slice(5)}</td><td>${esc(d.mode)}</td><td>${d.reward.checks}</td><td>${d.reward.xs}</td><td>${d.reward.final ? d.reward.minutes : '…'}</td><td>${esc(d.working_for)}</td></tr>`).join('')}</table></div>`;
