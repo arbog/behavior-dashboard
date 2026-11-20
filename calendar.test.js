@@ -78,10 +78,21 @@ test('the SSRF guard: private networks are refused, loopback and public names ar
 // ---- the full save → sync → kiosk flow with a local feed server ----
 process.env.DB_PATH = ':memory:';
 const { server, db, store } = require('./server.js');
+// The feed the flow tests serve has its dates RELATIVE TO NOW. The kiosk shows upcoming events, so a
+// fixed-date fixture silently rots: SAMPLE's events were all "soon" until 2026-11-10, after which three
+// flow tests failed on an untouched main. (The parser tests above keep SAMPLE: parsing is clock-free.)
+const pad = n => String(n).padStart(2, '0');
+const ymd = d => `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}`;
+const inDays = n => new Date(Date.now() + n * 86400000);
+const freshFeed = () => 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\n' + [
+  ['Session A', `DTSTART:${ymd(inDays(1))}T170000Z`, `DTEND:${ymd(inDays(1))}T180000Z`],
+  ['Family visit', `DTSTART;VALUE=DATE:${ymd(inDays(2))}`, `DTEND;VALUE=DATE:${ymd(inDays(3))}`],
+  ['Session B', `DTSTART:${ymd(inDays(4))}T170000Z`, `DTEND:${ymd(inDays(4))}T180000Z`],
+].map(([summary, start, end]) => `BEGIN:VEVENT\r\nSUMMARY:${summary}\r\n${start}\r\n${end}\r\nEND:VEVENT\r\n`).join('') + 'END:VCALENDAR';
 let base, cookie, feedServer, feedBody, feedStatus = 200;
 test.before(async () => {
   await new Promise(r => server.listen(0, () => { base = `http://127.0.0.1:${server.address().port}`; r(); }));
-  feedServer = http.createServer((rq, rs) => { rs.writeHead(feedStatus, { 'content-type': 'text/calendar' }); rs.end(feedBody || SAMPLE); });
+  feedServer = http.createServer((rq, rs) => { rs.writeHead(feedStatus, { 'content-type': 'text/calendar' }); rs.end(feedBody || freshFeed()); });
   await new Promise(r => feedServer.listen(0, '127.0.0.1', r));
   const s = await fetch(base + '/api/admin/setup', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'correct-horse-battery', child_name: 'Sam', token: process.env.SETUP_TOKEN }) });
   cookie = s.headers.get('set-cookie').split(';')[0];
